@@ -13,6 +13,9 @@
 /.vs/
 /.idea/
 
+# 本机 IntelliSense 编译器路径，由每位开发者自行配置
+/.vscode/c_cpp_properties.json
+
 # 约定用于保存临时运行输出的目录
 /logs/
 /output/
