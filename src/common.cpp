@@ -9,7 +9,7 @@
 
 namespace animus {
 Issue make_issue(IssueKind kind, std::string code, std::string message) {
-    return {kind, std::move(code), std::move(message), {}, {}, {}, {}};
+    return {kind, std::move(code), std::move(message), {}, {}, {}, {}, {}, {}};
 }
 Mask width_mask(unsigned width) {
     return width == 32 ? 0xFFFFFFFFu : (Word{1} << width) - 1;
@@ -35,6 +35,22 @@ Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& la
     if (launch.init_mask == 0) return std::optional<WarpId>{};
     auto entry = machine.memory.fetch32(launch.entry);
     if (!entry) return entry.error();
+    auto code_regions = launch.code_regions;
+    if (code_regions.empty()) {
+        auto mapped = machine.memory.executable_region_at(launch.entry);
+        if (!mapped) return mapped.error();
+        code_regions.push_back(mapped.value());
+    }
+    bool contains_entry = false;
+    for (const auto& region : code_regions) {
+        if ((region.base & 3u) != 0 || (region.bytes & 3u) != 0)
+            return make_issue(IssueKind::HostError, "InvalidCodeRegion", "Code regions must be word aligned.");
+        auto checked = machine.memory.check_access(region.base, region.bytes, Access::Execute);
+        if (!checked) return checked.error();
+        if (launch.entry >= region.base && std::uint64_t{launch.entry} + 4 <= std::uint64_t{region.base} + region.bytes)
+            contains_entry = true;
+    }
+    if (!contains_entry) return make_issue(IssueKind::HostError, "InvalidCodeRegion", "Entry is outside declared shader code.");
     for (WarpId id = 0; id < kWarpSlots; ++id) {
         if (machine.warps[id].allocated) continue;
         auto& warp = machine.warps[id];
@@ -43,6 +59,7 @@ Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& la
         warp.id = id;
         warp.pc = launch.entry;
         warp.init_mask = warp.exec = launch.init_mask;
+        warp.code_regions = code_regions;
         return std::optional<WarpId>{id};
     }
     return make_issue(IssueKind::ModelLimit, "NoFreeWarpSlot", "All four warp slots are allocated.");

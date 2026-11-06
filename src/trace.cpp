@@ -18,7 +18,15 @@ void write_trace(std::ostream& output, const StepRecord& record) {
         output << "{\"lane\":" << write.lane << ",\"reg\":" << write.reg
                << ",\"before\":" << write.before << ",\"after\":" << write.after << '}';
     }
-    output << "]}\n";
+    output << "],\"memory_writes\":[";
+    first = true;
+    for (const auto& write : record.memory_writes) {
+        if (!first) output << ',';
+        first = false;
+        output << "{\"lane\":" << write.lane << ",\"address\":" << write.address
+               << ",\"bytes\":" << write.bytes << ",\"before\":" << write.before << ",\"after\":" << write.after << '}';
+    }
+    output << "],\"experimental_profile\":" << (record.experimental_profile ? "true" : "false") << "}\n";
     output.flags(flags);
 }
 void write_issue(std::ostream& output, const Issue& issue) {
@@ -31,6 +39,8 @@ void write_issue(std::ostream& output, const Issue& issue) {
     if (issue.pc) output << " pc=0x" << std::hex << *issue.pc;
     if (issue.raw) output << " raw=0x" << std::hex << *issue.raw;
     if (issue.lane) output << " lane=" << std::dec << *issue.lane;
+    if (issue.address) output << " address=0x" << std::hex << *issue.address;
+    if (issue.spec_issue_id) output << " spec=" << *issue.spec_issue_id;
     output << '\n';
     output.flags(flags);
 }

@@ -94,8 +94,8 @@ void decode_vectors() {
     auto add = decode(0x00108133u); ok(add); // add x2,x1,x1
     require(add.value().op == Op::Add && add.value().rd == 2 && add.value().rs1 == 1 && add.value().rs2 == 1, "ADD fields");
     require(!decode(0) && decode(0).error().kind == IssueKind::ArchitecturalFault, "Invalid word");
-    require(!decode(0x40108133u) && decode(0x40108133u).error().kind == IssueKind::ModelLimit, "SUB is not ADD");
-    require(!decode(0x00101093u), "Shift encoding is not ADDI");
+    require(decode(0x40108133u).value().op == Op::Subtract, "SUB is distinct from ADD");
+    require(decode(0x00101093u).value().op == Op::ShiftLeftImmediate, "Shift encoding is distinct from ADDI");
     require(!decode(0x00100073u), "EBREAK is not success/NOP");
 }
 void execution_and_trace() {

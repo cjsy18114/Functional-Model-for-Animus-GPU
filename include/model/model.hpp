@@ -31,6 +31,8 @@ struct Issue {
     std::optional<unsigned> lane;
     std::optional<Addr> pc;
     std::optional<Word> raw;
+    std::optional<Addr> address;
+    std::optional<std::string> spec_issue_id;
 };
 Issue make_issue(IssueKind kind, std::string code, std::string message);
 
@@ -62,6 +64,8 @@ struct ModelConfig {
     std::uint64_t memory_bytes = 64ull * 1024 * 1024;
     std::uint64_t max_steps = 1'000'000;
     bool check_undefined = true;
+    // Unconfirmed S06/S07 policies: opt in to natural-alignment faults and lane-order stores.
+    bool allow_experimental = false;
 };
 Result<void> validate_config(const ModelConfig& config);
 Mask width_mask(unsigned width); // Precondition: width is in [1,32].
@@ -73,6 +77,7 @@ struct MemoryRegion {
     std::uint64_t bytes;
     unsigned permissions;
 };
+struct CodeRegion { Addr base; std::uint64_t bytes; };
 class Memory {
 public:
     explicit Memory(std::size_t bytes) : bytes_(bytes, 0) {}
@@ -82,6 +87,10 @@ public:
     Result<Word> load_le(Addr address, unsigned bytes, Access access = Access::Read) const;
     Result<void> store_le(Addr address, unsigned bytes, Word value);
     Result<Word> fetch32(Addr pc) const;
+    Result<CodeRegion> executable_region_at(Addr pc) const;
+    // Internal helpers: caller must precheck width, full range and write permission.
+    Word peek_le_prechecked(Addr address, unsigned bytes) const;
+    void store_le_prechecked(Addr address, unsigned bytes, Word value);
     // Loader-only operation: initializes an image before guest execution.
     Result<void> load_image(Addr address, std::span<const std::uint8_t> bytes,
                             unsigned permissions);
@@ -112,6 +121,7 @@ struct WarpState {
     unsigned sp = 0;
     std::array<ReconvergenceFrame, kStackDepth> stack{};
     WarpStatus status = WarpStatus::Ready;
+    std::vector<CodeRegion> code_regions{};
 };
 struct Machine {
     ModelConfig config;
@@ -121,7 +131,12 @@ struct Machine {
     explicit Machine(const ModelConfig& cfg) : config(cfg), memory(static_cast<std::size_t>(cfg.memory_bytes)) {}
 };
 Result<Machine> create_machine(const ModelConfig& config = {});
-struct LaunchInfo { Addr entry = 0; Mask init_mask = 0xFFFFFFFFu; };
+struct LaunchInfo {
+    Addr entry = 0;
+    Mask init_mask = 0xFFFFFFFFu;
+    // Empty defaults to the executable image containing entry; explicit ranges support split images.
+    std::vector<CodeRegion> code_regions{};
+};
 Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& launch);
 Result<void> initialize_x(Machine& machine, WarpId warp, unsigned lane, unsigned reg, Word value);
 
@@ -132,19 +147,43 @@ struct BinaryImage {
 };
 Result<void> load_binary(Machine& machine, const BinaryImage& image);
 
-enum class Op { AddImmediate, Add };
+enum class Op {
+    AddImmediate, Add, Subtract, ShiftLeft, LessSigned, LessUnsigned,
+    Xor, ShiftRight, ShiftRightArithmetic, Or, And,
+    LessSignedImmediate, LessUnsignedImmediate, XorImmediate, OrImmediate, AndImmediate,
+    ShiftLeftImmediate, ShiftRightImmediate, ShiftRightArithmeticImmediate, Lui, Auipc,
+    LoadByte, LoadHalf, LoadWord, LoadByteUnsigned, LoadHalfUnsigned,
+    StoreByte, StoreHalf, StoreWord,
+    BranchEqual, BranchNotEqual, BranchLessSigned, BranchGreaterEqualSigned,
+    BranchLessUnsigned, BranchGreaterEqualUnsigned, JumpLink, JumpLinkRegister,
+    Multiply, MultiplyHighSigned, MultiplyHighSignedUnsigned, MultiplyHighUnsigned,
+    DivideSigned, DivideUnsigned, RemainderSigned, RemainderUnsigned,
+    Split, Join, ReadThreadMask
+};
+enum class InstructionClass { Alu, MulDiv, LoadStore, Control, Simt, ThreadMask };
 struct DecodedInst {
     Word raw = 0;
     Op op = Op::AddImmediate;
     unsigned rd = 0, rs1 = 0, rs2 = 0;
-    Word immediate_bits = 0; // Sign-extended 12-bit immediate, represented modulo 2^32.
+    Word immediate_bits = 0; // Sign-extended immediate/byte offset, U bits, or unsigned shift amount.
+    InstructionClass instruction_class = InstructionClass::Alu;
+    bool uses_rs1 = false, uses_rs2 = false;
+    unsigned csr_operation = 0; // B supports access to gpu_tmr only, not general Zicsr.
 };
 Result<DecodedInst> decode(Word raw);
 const char* op_name(Op op);
 struct RegisterWrite { unsigned lane, reg; Word before, after; };
+struct MemoryWrite { unsigned lane; Addr address; unsigned bytes; Word before, after; };
+struct ControlUpdate {
+    Mask exec;
+    unsigned sp;
+    std::array<ReconvergenceFrame, kStackDepth> stack;
+};
 struct StepEffect {
     Addr next_pc = 0;
     std::vector<RegisterWrite> register_writes;
+    std::vector<MemoryWrite> memory_writes;
+    std::optional<ControlUpdate> control;
 };
 struct StepRecord {
     std::uint64_t step = 0;
@@ -155,11 +194,21 @@ struct StepRecord {
     Word raw = 0;
     Op op = Op::AddImmediate;
     std::vector<RegisterWrite> register_writes;
+    std::vector<MemoryWrite> memory_writes;
+    bool experimental_profile = false;
 };
 Result<StepEffect> evaluate(const Machine& machine, WarpId warp, const DecodedInst& inst);
 // Internal commit boundary: effect must come from successful evaluate of the current state.
 void commit_effect(Machine& machine, WarpId warp, const StepEffect& effect);
 Result<StepRecord> step_shader(Machine& machine, WarpId warp);
+enum class StopReason { Paused, Timeout, ArchitecturalFault, ModelLimit, Diagnostic, HostError };
+struct RunReport {
+    StopReason reason;
+    std::uint64_t retired_steps;
+    std::optional<Issue> issue;
+};
+// Single selected warp only. Reaching stop_pc is a debugger pause, not shader termination.
+RunReport run_until_stop(Machine& machine, WarpId warp, Addr stop_pc, std::ostream* trace = nullptr);
 void write_trace(std::ostream& output, const StepRecord& record);
 void write_issue(std::ostream& output, const Issue& issue);
 } // namespace animus
