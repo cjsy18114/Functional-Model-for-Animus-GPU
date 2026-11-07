@@ -19,7 +19,7 @@ Result<void> validate_warp(const Machine& machine, WarpId id) {
 Result<StepEffect> evaluate(const Machine& machine, WarpId id, const DecodedInst& inst) {
     auto valid = validate_warp(machine, id);
     if (!valid) return valid.error();
-    if (inst.rd >= kRegisters || inst.rs1 >= kRegisters || inst.rs2 >= kRegisters)
+    if (inst.rd >= kRegisters || inst.rs1 >= kRegisters || inst.rs2 >= kRegisters || inst.rs3 >= kRegisters)
         return make_issue(IssueKind::HostError, "InvalidDecodedRegister", "Decoded register index is out of range.");
     const auto& warp = machine.warps[id];
     // Read validation covers all active lanes before any module can submit effects.
@@ -31,6 +31,12 @@ Result<StepEffect> evaluate(const Machine& machine, WarpId id, const DecodedInst
             auto issue = make_issue(IssueKind::Diagnostic, "UndefinedRegister", "Active lane reads an uninitialized integer register.");
             issue.lane = lane; return issue;
         }
+        if (machine.config.check_undefined &&
+            ((inst.uses_fs1 && !state.f_defined[inst.rs1]) || (inst.uses_fs2 && !state.f_defined[inst.rs2]) ||
+             (inst.uses_fs3 && !state.f_defined[inst.rs3]))) {
+            auto issue = make_issue(IssueKind::Diagnostic, "UndefinedFloatRegister", "Active lane reads an uninitialized floating register.");
+            issue.lane = lane; return issue;
+        }
     }
     switch (inst.instruction_class) {
     case InstructionClass::Alu: return eval_alu(machine, id, inst);
@@ -39,17 +45,27 @@ Result<StepEffect> evaluate(const Machine& machine, WarpId id, const DecodedInst
     case InstructionClass::Control: return eval_control(machine, id, inst);
     case InstructionClass::Simt: return eval_simt(machine, id, inst);
     case InstructionClass::ThreadMask: return eval_thread_mask(machine, id, inst);
+    case InstructionClass::Float: return eval_fp(machine, id, inst);
+    case InstructionClass::Csr: return eval_csr(machine, id, inst);
+    case InstructionClass::Environment: return eval_environment(machine, id, inst);
+    case InstructionClass::Sfu: return eval_sfu(machine, id, inst);
     }
     return make_issue(IssueKind::HostError, "InvalidInstructionClass", "Unknown instruction class.");
 }
 void commit_effect(Machine& machine, WarpId id, const StepEffect& effect) {
     auto& warp = machine.warps[id];
     for (const auto& write : effect.register_writes) {
-        warp.lanes[write.lane].x[write.reg] = write.after;
-        warp.lanes[write.lane].x_defined[write.reg] = true;
+        auto& lane = warp.lanes[write.lane];
+        if (write.file == RegisterFile::Float) {
+            lane.f_bits[write.reg] = write.after; lane.f_defined[write.reg] = true;
+        } else {
+            lane.x[write.reg] = write.after; lane.x_defined[write.reg] = true;
+        }
     }
     for (const auto& write : effect.memory_writes)
         machine.memory.store_le_prechecked(write.address, write.bytes, write.after);
+    for (const auto& write : effect.csr_writes)
+        warp.lanes[write.lane].fcsr = static_cast<std::uint8_t>(write.after);
     if (effect.control) {
         warp.exec = effect.control->exec;
         warp.sp = effect.control->sp;
@@ -96,6 +112,9 @@ Result<StepRecord> step_shader(Machine& machine, WarpId id) {
     record.register_writes = effect.value().register_writes;
     record.memory_writes = effect.value().memory_writes;
     record.experimental_profile = machine.config.allow_experimental;
+    record.csr_writes = effect.value().csr_writes;
+    record.fp_state_policy = machine.config.fp_state_policy; record.sfu_profile = machine.config.sfu_profile;
+    record.invocation_id = warp.invocation_id;
     commit_effect(machine, id, effect.value());
     ++machine.retired_steps;
     return record;

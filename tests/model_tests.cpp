@@ -96,7 +96,7 @@ void decode_vectors() {
     require(!decode(0) && decode(0).error().kind == IssueKind::ArchitecturalFault, "Invalid word");
     require(decode(0x40108133u).value().op == Op::Subtract, "SUB is distinct from ADD");
     require(decode(0x00101093u).value().op == Op::ShiftLeftImmediate, "Shift encoding is distinct from ADDI");
-    require(!decode(0x00100073u), "EBREAK is not success/NOP");
+    require(decode(0x00100073u).value().op == Op::Breakpoint, "EBREAK decodes as an exception operation, not NOP");
 }
 void execution_and_trace() {
     auto machine = small_machine();

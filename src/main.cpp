@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 bool parse_number(std::string_view text, std::uint64_t& value) {
@@ -19,16 +20,27 @@ bool parse_number(std::string_view text, std::uint64_t& value) {
 }
 int main(int argc, char** argv) {
     using namespace animus;
-    const bool stop_mode = argc == 4 && std::string_view(argv[2]) == "--stop-pc";
-    if (argc != 3 && !stop_mode) {
+    std::vector<std::string_view> arguments;
+    bool numeric = false;
+    for (int index = 1; index < argc; ++index) {
+        if (std::string_view(argv[index]) == "--experimental-numeric") numeric = true;
+        else arguments.emplace_back(argv[index]);
+    }
+    const bool stop_mode = arguments.size() == 3 && arguments[1] == "--stop-pc";
+    if (arguments.size() != 2 && !stop_mode) {
         std::cerr << "Usage: animus_model_cli <code.bin> <instruction-count>\n"
                      "   or: animus_model_cli <code.bin> --stop-pc <address>\n"
-                     "Code is loaded at address 0; warp 0 uses all 32 lanes. Stops are host pauses.\n";
+                     "Optional: --experimental-numeric (S04 per-lane fcsr and S05 HostMathV1).\nCode is loaded at address 0; warp 0 uses all 32 lanes. Stops are host pauses.\n";
         return 2;
     }
     std::uint64_t number = 0;
     ModelConfig config;
-    if (!parse_number(argv[stop_mode ? 3 : 2], number) ||
+    if (numeric) {
+        config.fp_state_policy = FpStatePolicy::PerLaneExperimental;
+        config.sfu_profile = SfuProfile::HostMathV1;
+        std::cerr << "Experimental numeric profiles: per-lane fcsr; HostMathV1 SFU. Not approved hardware semantics.\n";
+    }
+    if (!parse_number(arguments[stop_mode ? 2 : 1], number) ||
         (stop_mode ? number > std::numeric_limits<Addr>::max() || (number & 3u) != 0 : number == 0 || number > config.max_steps)) {
         std::cerr << "Use an aligned 32-bit stop address or an instruction count in 1..1000000.\n";
         return 2;
@@ -36,7 +48,7 @@ int main(int argc, char** argv) {
     auto created = create_machine(config);
     if (!created) { write_issue(std::cerr, created.error()); return 1; }
     auto& machine = created.value();
-    auto loaded = load_binary(machine, {std::filesystem::path(argv[1]), 0, 0});
+    auto loaded = load_binary(machine, {std::filesystem::path(std::string(arguments[0])), 0, 0});
     if (!loaded) { write_issue(std::cerr, loaded.error()); return 1; }
     auto launched = create_warp(machine, {0, 0xFFFFFFFFu});
     if (!launched) { write_issue(std::cerr, launched.error()); return 1; }

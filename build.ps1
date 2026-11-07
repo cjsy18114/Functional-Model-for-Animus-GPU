@@ -2,23 +2,48 @@ param([string]$Compiler = 'g++')
 $ErrorActionPreference = 'Stop'
 Push-Location -LiteralPath $PSScriptRoot
 try {
-    New-Item -ItemType Directory -Path 'build' -Force | Out-Null
-    $sources = @('src/common.cpp', 'src/memory.cpp', 'src/loader.cpp', 'src/decode.cpp', 'src/engine.cpp', 'src/trace.cpp', 'src/exec_integer.cpp', 'src/exec_memory.cpp', 'src/exec_simt.cpp')
-    $flags = @('-std=c++20', '-Wall', '-Wextra', '-Wpedantic', '-Iinclude', '-g')
-    & $Compiler @flags @sources 'tests/model_tests.cpp' '-o' 'build/animus_model_tests.exe'
-    if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
-    & $Compiler @flags @sources 'tests/stage_b_tests.cpp' '-o' 'build/animus_model_tests_b.exe'
-    if ($LASTEXITCODE -ne 0) { throw 'Stage B test build failed.' }
-    & $Compiler @flags @sources 'src/main.cpp' '-o' 'build/animus_model_cli.exe'
-    if ($LASTEXITCODE -ne 0) { throw 'CLI build failed.' }
-    # MinGW runtime DLLs are normally next to the selected compiler.
     $compilerPath = (Get-Command $Compiler -ErrorAction Stop).Source
+    $compilerDirectory = Split-Path $compilerPath
+    $cCompiler = Join-Path $compilerDirectory 'gcc.exe'
+    if (-not (Test-Path -LiteralPath $cCompiler)) { throw 'This script requires gcc.exe next to g++.exe; other toolchains can use CMake.' }
+    New-Item -ItemType Directory -Path 'build/softfloat-objects', 'build/model-objects' -Force | Out-Null
+    $sfRoot = Join-Path $PSScriptRoot 'third_party/softfloat'
+    $sfSources = @(Get-Content -LiteralPath (Join-Path $sfRoot 'sources.txt') | ForEach-Object { Join-Path $sfRoot $_ })
+    $sfIncludes = @('-I', $sfRoot, '-I', (Join-Path $sfRoot 'source/include'), '-I', (Join-Path $sfRoot 'source/8086-SSE'))
+    Push-Location -LiteralPath 'build/softfloat-objects'
+    try {
+        & $cCompiler '-std=c11' '-O2' '-DSOFTFLOAT_FAST_INT64' @sfIncludes '-c' @sfSources
+        if ($LASTEXITCODE -ne 0) { throw 'SoftFloat C build failed.' }
+    } finally { Pop-Location }
+    $sourceNames = @('common', 'memory', 'loader', 'decode', 'engine', 'trace', 'exec_integer',
+                     'exec_memory', 'exec_simt', 'scheduler', 'exec_fp', 'fp_backend', 'exec_csr')
+    $sources = @($sourceNames | ForEach-Object { Join-Path $PSScriptRoot ('src/' + $_ + '.cpp') })
+    $flags = @('-std=c++20', '-Wall', '-Wextra', '-Wpedantic', '-g', '-DSOFTFLOAT_FAST_INT64',
+               '-I', (Join-Path $PSScriptRoot 'include'), '-I', (Join-Path $sfRoot 'source/include'))
+    Push-Location -LiteralPath 'build/model-objects'
+    try {
+        & $compilerPath @flags '-c' @sources
+        if ($LASTEXITCODE -ne 0) { throw 'Model C++ build failed.' }
+    } finally { Pop-Location }
+    # Use the explicit manifest, not a wildcard, so old build artifacts cannot enter a new link.
+    $objects = @($sourceNames | ForEach-Object { Join-Path $PSScriptRoot ('build/model-objects/' + $_ + '.o') })
+    $objects += @($sfSources | ForEach-Object { Join-Path $PSScriptRoot ('build/softfloat-objects/' + [IO.Path]::GetFileNameWithoutExtension($_) + '.o') })
+    $targets = @(
+        @{ Source = 'tests/model_tests.cpp'; Output = 'animus_model_tests' },
+        @{ Source = 'tests/stage_b_tests.cpp'; Output = 'animus_model_tests_b' },
+        @{ Source = 'tests/stage_c_tests.cpp'; Output = 'animus_model_tests_c' },
+        @{ Source = 'src/main.cpp'; Output = 'animus_model_cli' }
+    )
+    foreach ($target in $targets) {
+        & $compilerPath @flags $target.Source @objects '-o' ('build/' + $target.Output + '.exe')
+        if ($LASTEXITCODE -ne 0) { throw ('Build failed: ' + $target.Output) }
+    }
     $oldPath = $env:PATH
     try {
-        $env:PATH = (Split-Path $compilerPath) + ';' + $oldPath
-        & '.\build\animus_model_tests.exe'
-        if ($LASTEXITCODE -ne 0) { throw 'Stage A tests failed.' }
-        & '.\build\animus_model_tests_b.exe'
-        if ($LASTEXITCODE -ne 0) { throw 'Stage B tests failed.' }
+        $env:PATH = $compilerDirectory + ';' + $oldPath
+        foreach ($name in @('animus_model_tests', 'animus_model_tests_b', 'animus_model_tests_c')) {
+            & ('.\build\' + $name + '.exe')
+            if ($LASTEXITCODE -ne 0) { throw ('Tests failed: ' + $name) }
+        }
     } finally { $env:PATH = $oldPath }
 } finally { Pop-Location }

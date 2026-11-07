@@ -1,6 +1,6 @@
 # Functional Model for Animus GPU
 
-Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。当前已完成开发计划 **A1–A4、B1–B7**，未进入 C 阶段。
+Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。当前已完成开发计划 **A1–A4、B1–B7、C1–C5** 的实现与本机测试；未进入 D 阶段。
 
 ## 已实现范围
 
@@ -11,7 +11,7 @@ Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。�
 - 先求值并预检全部活动 lane，再统一提交寄存器/内存/控制状态；x0 写丢弃、逻辑步预算和 stop_pc。
 - JSONL 指令轨迹（含内存写入、EXEC/SP 变化、实验配置标志），带 PC/warp/lane/地址/规格问题编号的错误。
 
-尚无自动 warp 调度/退出/释放、wspawn/bar/tmc 管理指令、浮点/SFU、Graphics、Command 或 Vulkan 接入。gpu_tmr 支持 CSRRS/CSRRC/CSRRSI/CSRRCI 的零源读取；实际写请求拒绝，其他 CSR 留至 C4。预留的浮点寄存器不是已实现的浮点能力。
+新增宿主四 warp 轮询、测试结束和回收复用；RV32F 的 26 条指令（包括 FLW/FSW、单次舍入 FMA、五种舍入模式、NaN/Inf/异常标志）；六种 CSR 操作、FENCE、ECALL/EBREAK；六种 SFU 参考运算。gpu_tmr 仍只读。没有 wspawn/bar/tmc 管理指令、Graphics、Command 或 Vulkan 接入；异常处理器与正式任务退出 ABI 尚未定义。
 
 ### 未确认规则如何处理
 
@@ -22,7 +22,7 @@ Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。�
 
 ## 构建与测试
 
-需要支持 C++20 的编译器。安装了 CMake 时，在仓库根目录执行：
+需要 C++20 与 C11 编译器。标准浮点使用仓库内附的 SoftFloat 3e 精简源码，不需联网下载；来源、校验值和许可见 `third_party/softfloat/`。当前平台配置要求小端主机；模型按单宿主线程使用。安装了 CMake 时，在仓库根目录执行：
 
 ```powershell
 cmake -S . -B build
@@ -30,7 +30,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-本机已发现 GCC 13.2，可不依赖 CMake，直接构建并运行 A/B 两套测试：
+本机使用 GCC 13.2，可不依赖 CMake，直接构建并运行 A/B/C 三套测试（脚本要求 g++.exe 同目录有 gcc.exe）：
 
 ```powershell
 .\build.ps1 -Compiler 'D:\mingw-19.0\MinGW\bin\g++.exe'
@@ -63,7 +63,7 @@ CMake/Visual Studio 构建可能将程序放在 `build/Debug/`。示例每 lane 
 
 预期 7 条成功指令，最终 PC=12、32 lane 的 x1=0。`--stop-pc` 支持十进制或 `0x` 十六进制，达到地址时在取指前暂停；不可达时由总步数预算停止，不将超时当作正常结束。
 
-`build.ps1` 运行原有 7 组回归及 14 组 B 阶段测试（包含 240 个小掩码组合）。也可单独执行 `build/animus_model_tests_b.exe`。若有 Python，可额外用独立的整数参考算法验证 810 组边界/固定种子随机向量，每组检查全部 32 lane：
+`build.ps1` 当前运行 A/B/C 三套测试，其中 B 为 14 组（包含 240 个小掩码组合）。也可单独执行 `build/animus_model_tests_b.exe`。若有 Python，可额外用独立的整数参考算法验证 810 组边界/固定种子随机向量，每组检查全部 32 lane：
 
 ```powershell
 python .\tests\differential_integer.py
@@ -73,6 +73,37 @@ python .\tests\differential_integer.py
 
 ## 模块和接口
 
+### C 阶段运行与验证
+
+在仓库根目录先执行上面的构建命令；它会自动运行 A 的 7 组、B 的 14 组和 C 的 13 组测试。C 测试最后打印 `C instruction coverage: 41/41`：新增 41 种操作均执行检查，其中 ECALL/EBREAK 检查预期异常。
+
+```powershell
+$env:PATH = 'D:\mingw-19.0\MinGW\bin;' + $env:PATH
+.\build\animus_model_tests_c.exe
+python .\tests\differential_integer.py
+python .\tests\differential_float.py
+.\build\animus_model_cli.exe .\cases\fp_arithmetic.bin 6 --experimental-numeric
+.\build\animus_model_cli.exe .\cases\sfu_rsqrt.bin 4 --experimental-numeric
+```
+
+两个示例分别得到每 lane 的 x3=0x40700000（浮点 3.75 的位模式）和 x3=0x3F000000（0.5 的位模式），终止 PC 分别为 24、16；详细机器字见 `cases/README.md`。第二个参数是成功执行的逻辑指令数，仍是宿主暂停条件。
+
+`--experimental-numeric` 显式同时选择 `PerLaneExperimental` 和 `HostMathV1`，会在标准错误中提示，轨迹分别记录 `fp_state_policy`、`sfu_profile`。它不启用 B 的冲突访存实验策略。不传该参数时，FLW/FSW、位搬运、符号和分类可执行；涉及浮点舍入/异常状态的运算与 CSR 在 S04 处暂停，SFU 在 S05 处暂停。这样避免把待讨论规则当作正式 ISA。
+
+- C++ 测试检查四 warp 独立状态与共享内存、槽位复用、完整 F/CSR/SFU 指令分组、掩码、错误原子性、浮点特殊数和轨迹。f0 可写，x0 不可写。
+- `differential_float.py` 用 Python Fraction 精确有理数和整数平方根独立核对 900 组浮点结果及异常标志，覆盖五种舍入模式和 32 lane；另用高精度 Decimal 参考检查 42 组 SFU 有限输入。4 ULP 只是这些 SFU 用例的验收条件，不保证所有输入或未来硬件误差。
+- `differential_integer.py` 保留 B 的 810 组独立整数参考检查。Python 仅是额外测试依赖。脚本生成文件写入被忽略的 build 目录。
+
+浮点标准运算由软件逐位计算，不依赖宿主 float 的默认舍入；SFU 的 HostMathV1 单独采用 double 数学库，弧度制、RNE 转 FP32、规范 NaN、不更新 guest fflags。未确认事项集中在上层 `ISA改进思考记录日志.md` 的 C 阶段独立章节。通过这些测试不等于 Vulkan 1.3 完备性认证。
+
+### 四 warp 宿主接口
+
+先装载各段代码、用 `create_warp` 创建上下文，再用 `initialize_x` / `initialize_f` 设置每 lane 初态。`initialize_f` 的 value 是 FP32 原始 32 位，不是宿主浮点值。
+
+`run_warps_until_stops(machine, stops, trace)` 的 stops 为 1–4 个唯一的 `{warp, stop_pc}`，只轮询所选 Ready warp，每次执行一条；其他 warp 不运行。在各自 stop_pc 前暂停后，逐个 `finish_test_warp(machine, id, stop_pc)`，要求空重汇合栈且 EXEC 恢复初始掩码；随后 `release_warp(machine, id)` 返回最终状态快照并清空槽位。故障 warp 也可释放；仍在运行、等待或仅暂停的 warp 不能直接释放。新调用有新的 `invocation_id`，可区分同槽位的前后任务。
+
+这套接口供测试使用，不是 guest 机器指令或正式派发 ABI；不会模拟硬件时钟、两个 SFU 的争用或 barrier。没有 Ready warp 而仍有未完成者时返回 SuspectedDeadlock 诊断。
+
 ### VS Code 标准库头文件提示
 
 请用“文件 → 打开文件夹”打开本仓库根目录（包含 CMakeLists.txt 的目录）。若提示无法打开 string、array、span 等标准库头文件，执行 `C/C++: Edit Configurations (UI)`，设置 Compiler path 为本机 C++ 编译器路径，C++ standard 为 C++20，IntelliSense mode 为 windows-gcc-x64，Include path 加入 `${workspaceFolder}/include`。
@@ -81,26 +112,60 @@ python .\tests\differential_integer.py
 
 ### 文件职责
 
+文件按下面四类阅读；这是职责分类，不移动文件。**理解机器码如何执行，先读第一类；核对结果是否正确，重点读第三类。** 宿主启动/停止接口是模型运行支撑，不能当作 GPU 已支持的机器指令。
+
+#### 1. 架构功能与指令执行
+
 | 文件 | 职责 |
 | --- | --- |
 | include/model/model.hpp | 公共类型、函数声明、状态与结果契约 |
-| src/common.cpp | 配置、模型创建、宿主 warp 启动与初态设置 |
-| src/memory.cpp | 内存、权限、区域映射与取指 |
-| src/loader.cpp | 文件检查与原始机器码装载 |
-| src/decode.cpp | B 阶段指令编码匹配、格式检查和立即数扩展 |
-| src/engine.cpp | 分类分派、源值预检、集中提交、单步与 stop_pc |
 | include/model/execution.hpp | 执行模块内部共用接口 |
+| src/memory.cpp | 内存、权限、区域映射与取指 |
+| src/decode.cpp | A–C 指令编码匹配、格式检查和立即数扩展 |
+| src/engine.cpp | 分类分派、源值预检、集中提交和单步；同文件也提供宿主 stop_pc 运行接口 |
 | src/exec_integer.cpp | ALU、M、分支与跳转 |
-| src/exec_memory.cpp | guest 整数 load/store、对齐/冲突规则 |
+| src/exec_memory.cpp | guest 整数与浮点 load/store、对齐/冲突规则 |
 | src/exec_simt.cpp | split/join 与只读 gpu_tmr |
-| src/trace.cpp | 轨迹和错误格式化 |
-| src/main.cpp | 原始 bin 的最小运行入口 |
+| src/exec_fp.cpp | 每活动 lane 的浮点/SFU 执行与结果暂存 |
+| src/fp_backend.cpp | SoftFloat 适配、舍入/异常；SFU 使用显式实验参考 profile |
+| src/exec_csr.cpp | 浮点 CSR 六种操作、FENCE 和环境异常 |
+| third_party/softfloat/ | 标准浮点执行依赖，参与模型计算；附来源、校验值和许可证 |
+
+SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结果是否正确的独立参考算法归入第三类。公共头文件还声明宿主接口，不能只凭文件所在类别判断某个函数是否属于 ISA。
+
+#### 2. 宿主装载、上下文与运行入口
+
+| 文件 | 职责 |
+| --- | --- |
+| src/common.cpp | 配置检查、模型创建、宿主 warp 启动/初态、测试结束与槽位回收 |
+| src/loader.cpp | 文件检查与原始机器码装载 |
+| src/scheduler.cpp | 宿主多 warp 轮询与各自停止条件；不模拟硬件调度延迟 |
+| src/main.cpp | CLI 参数处理、创建单 warp、运行机器码和返回退出码 |
+
+#### 3. 辅助验证、诊断与案例
+
+| 文件 | 职责 |
+| --- | --- |
+| src/trace.cpp | 输出状态变化轨迹和错误位置，供人工或脚本核对 |
 | tests/model_tests.cpp | A 阶段回归（已实现的 SUB/移位改为正确识别断言） |
 | tests/stage_b_tests.cpp | B1–B7 功能、边界、非法输入与掩码组合 |
+| tests/stage_c_tests.cpp | C1–C5 的 13 组测试及新增操作覆盖检查 |
 | tests/differential_integer.py | 独立整数数学参考算法 |
+| tests/differential_float.py | 精确有理数浮点参考与 Decimal SFU 参考 |
+| cases/*.bin | A/B/C 可直接运行的示例机器码 |
+| cases/README.md | 示例机器字与预期结果说明 |
+
+#### 4. 构建与工程说明
+
+| 文件 | 职责 |
+| --- | --- |
+| CMakeLists.txt | C/C++ 目标、依赖和自动测试注册 |
+| build.ps1 | 本机 GCC 构建与 A/B/C 测试执行入口 |
+| .gitignore | 排除构建产物、临时文件与本机配置 |
+| README.md | 本仓库的构建、运行和职责索引 |
 
 `evaluate` 只生成 StepEffect；内存变化也先暂存，所有源值来自提交前状态。冲突实验中，memory_writes 的 before 统一表示指令执行前快照，after 按 lane 顺序提交；`commit_effect` 是内部提交边界，只能提交当前状态上成功求值得到的效果。一般调用者使用 `step_shader`，不要手工伪造 StepEffect。宿主初态通过 `initialize_x` 设置；未赋值的普通整数寄存器读取默认产生调试诊断。
 
-内存辅助函数按字节工作，不额外要求数据对齐；这不决定未来 LW/SW 的未对齐语义（S06 尚待确认）。装载映像创建只读/可执行区，区域不允许重叠，一次访问须位于一个区域内。未知指令不会静默跳过；B 范围内检查固定编码，范围外尚未完整译码的指令报告 ModelLimit，不能据此认定它是非法 ISA 程序。
+内存辅助函数按字节工作，不额外要求数据对齐；guest LW/SW/FLW/FSW 的未对齐策略另行检查（S06 尚待确认）。装载映像创建只读/可执行区，区域不允许重叠，一次访问须位于一个区域内。未知指令不会静默跳过；A–C 范围内检查固定编码，范围外尚未完整译码的指令报告 ModelLimit，不能据此认定它是非法 ISA 程序。
 
-完整设计和讨论日志目前位于本仓库的父目录；README 保留了独立构建和运行所需说明。后续按 C 阶段逐项扩展，不把物理硬件延迟加入逻辑步计数。
+完整设计和讨论日志目前位于本仓库的父目录，包括 [C阶段设计与验证](../C阶段设计与验证.md)；README 保留了独立构建和运行所需说明。当前工作止于 C 阶段，后续按开发计划推进，不把物理硬件延迟加入逻辑步计数。

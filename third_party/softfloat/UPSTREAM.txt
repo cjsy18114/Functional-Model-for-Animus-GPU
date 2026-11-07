@@ -1,0 +1,5 @@
+Berkeley SoftFloat release 3e
+Source: https://www.jhauser.us/arithmetic/SoftFloat-3e.zip
+Archive SHA256: 21130ce885d35c1fe73fc1e1bf2244178167e05c6747cad5f450cc991714c746
+Retrieved: 2026-11-07
+Files under source/ are unmodified upstream source. See COPYING.txt.

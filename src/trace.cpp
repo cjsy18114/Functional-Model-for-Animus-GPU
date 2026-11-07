@@ -15,7 +15,7 @@ void write_trace(std::ostream& output, const StepRecord& record) {
     for (const auto& write : record.register_writes) {
         if (!first) output << ',';
         first = false;
-        output << "{\"lane\":" << write.lane << ",\"reg\":" << write.reg
+        output << "{\"file\":\"" << (write.file == RegisterFile::Float ? "f" : "x") << "\",\"lane\":" << write.lane << ",\"reg\":" << write.reg
                << ",\"before\":" << write.before << ",\"after\":" << write.after << '}';
     }
     output << "],\"memory_writes\":[";
@@ -26,7 +26,18 @@ void write_trace(std::ostream& output, const StepRecord& record) {
         output << "{\"lane\":" << write.lane << ",\"address\":" << write.address
                << ",\"bytes\":" << write.bytes << ",\"before\":" << write.before << ",\"after\":" << write.after << '}';
     }
-    output << "],\"experimental_profile\":" << (record.experimental_profile ? "true" : "false") << "}\n";
+    output << "],\"csr_writes\":[";
+    first = true;
+    for (const auto& write : record.csr_writes) {
+        if (!first) output << ',';
+        first = false;
+        output << "{\"lane\":" << write.lane << ",\"csr\":" << write.csr
+               << ",\"before_fcsr\":" << write.before << ",\"after_fcsr\":" << write.after << '}';
+    }
+    output << "],\"experimental_profile\":" << (record.experimental_profile ? "true" : "false")
+           << ",\"fp_state_policy\":\"" << (record.fp_state_policy == FpStatePolicy::Unspecified ? "unspecified" : "per-lane-experimental")
+           << "\",\"sfu_profile\":\"" << (record.sfu_profile == SfuProfile::Disabled ? "disabled" : "host-math-v1")
+           << "\",\"invocation_id\":" << record.invocation_id << "}\n";
     output.flags(flags);
 }
 void write_issue(std::ostream& output, const Issue& issue) {

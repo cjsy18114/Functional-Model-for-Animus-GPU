@@ -20,6 +20,9 @@ Result<void> validate_config(const ModelConfig& config) {
     if (config.memory_bytes == 0 || config.memory_bytes > (1ull << 32) ||
         config.memory_bytes > std::numeric_limits<std::size_t>::max() || config.max_steps == 0)
         return make_issue(IssueKind::HostError, "InvalidConfig", "Invalid memory size or instruction budget.");
+    if ((config.fp_state_policy != FpStatePolicy::Unspecified && config.fp_state_policy != FpStatePolicy::PerLaneExperimental) ||
+        (config.sfu_profile != SfuProfile::Disabled && config.sfu_profile != SfuProfile::HostMathV1))
+        return make_issue(IssueKind::HostError, "InvalidConfig", "Unknown numeric policy/profile.");
     return {};
 }
 Result<Machine> create_machine(const ModelConfig& config) {
@@ -56,6 +59,7 @@ Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& la
         auto& warp = machine.warps[id];
         warp = WarpState{};
         warp.allocated = true;
+        warp.invocation_id = machine.next_invocation_id++;
         warp.id = id;
         warp.pc = launch.entry;
         warp.init_mask = warp.exec = launch.init_mask;
@@ -69,6 +73,41 @@ Result<void> initialize_x(Machine& machine, WarpId id, unsigned lane, unsigned r
         return make_issue(IssueKind::HostError, "InvalidRegister", "Invalid initial register location.");
     auto& state = machine.warps[id].lanes[lane];
     if (reg != 0) { state.x[reg] = value; state.x_defined[reg] = true; }
+    return {};
+}
+Result<void> initialize_f(Machine& machine, WarpId id, unsigned lane, unsigned reg, Word bits) {
+    if (id >= kWarpSlots || !machine.warps[id].allocated || lane >= machine.config.warp_width || reg >= kRegisters)
+        return make_issue(IssueKind::HostError, "InvalidRegister", "Invalid initial floating register location.");
+    auto& state = machine.warps[id].lanes[lane];
+    state.f_bits[reg] = bits; state.f_defined[reg] = true; // f0 is writable, unlike x0.
+    return {};
+}
+Result<void> finish_test_warp(Machine& machine, WarpId id, Addr stop_pc) {
+    if (id >= kWarpSlots || !machine.warps[id].allocated)
+        return make_issue(IssueKind::HostError, "InvalidWarp", "Warp slot is not allocated.");
+    auto& warp = machine.warps[id];
+    if (warp.status != WarpStatus::Ready || warp.pc != stop_pc || warp.sp != 0 || warp.exec != warp.init_mask)
+        return make_issue(IssueKind::HostError, "NotAtTestExit", "Host test completion requires a reconverged warp at its stop PC.");
+    warp.status = WarpStatus::Ended;
+    return {};
+}
+Result<WarpState> release_warp(Machine& machine, WarpId id) {
+    if (id >= kWarpSlots || !machine.warps[id].allocated)
+        return make_issue(IssueKind::HostError, "InvalidWarp", "Warp slot is not allocated.");
+    auto& warp = machine.warps[id];
+    if (warp.status != WarpStatus::Ended && warp.status != WarpStatus::Faulted)
+        return make_issue(IssueKind::HostError, "WarpStillLive", "Cannot release a live/paused/waiting warp.");
+    auto snapshot = warp;
+    warp = WarpState{};
+    return snapshot;
+}
+std::optional<WarpId> choose_ready(const Machine& machine, std::optional<WarpId> after, Mask excluded) {
+    const unsigned start = after ? (*after + 1) % kWarpSlots : 0;
+    for (unsigned offset = 0; offset < kWarpSlots; ++offset) {
+        const auto id = static_cast<WarpId>((start + offset) % kWarpSlots);
+        const auto& warp = machine.warps[id];
+        if (warp.allocated && warp.status == WarpStatus::Ready && (excluded & (Mask{1} << id)) == 0) return id;
+    }
     return {};
 }
 } // namespace animus

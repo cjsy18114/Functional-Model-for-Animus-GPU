@@ -81,7 +81,7 @@ void decode_contracts() {
     require(decode(branch(0,4094)).value().immediate_bits==4094,"B maximum immediate");
     require(decode(jal(-1048576)).value().immediate_bits==0xFFF00000,"J minimum immediate");
     require(decode(jal(1048574)).value().immediate_bits==1048574,"J maximum immediate");
-    require(!decode(0x00002007),"Float load remains outside B");
+    require(decode(0x00002007).value().op==Op::LoadFloat,"FLW is distinct from integer loads");
 }
 void alu_vectors() {
     struct Vector { Word instruction,a,b,result; };
