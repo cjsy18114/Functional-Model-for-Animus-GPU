@@ -16,7 +16,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'SoftFloat C build failed.' }
     } finally { Pop-Location }
     $sourceNames = @('common', 'memory', 'loader', 'decode', 'engine', 'trace', 'exec_integer',
-                     'exec_memory', 'exec_simt', 'scheduler', 'exec_fp', 'fp_backend', 'exec_csr')
+                     'exec_memory', 'exec_simt', 'scheduler', 'exec_fp', 'fp_backend', 'exec_csr', 'exec_graphics')
     $sources = @($sourceNames | ForEach-Object { Join-Path $PSScriptRoot ('src/' + $_ + '.cpp') })
     $flags = @('-std=c++20', '-Wall', '-Wextra', '-Wpedantic', '-g', '-DSOFTFLOAT_FAST_INT64',
                '-I', (Join-Path $PSScriptRoot 'include'), '-I', (Join-Path $sfRoot 'source/include'))
@@ -32,6 +32,8 @@ try {
         @{ Source = 'tests/model_tests.cpp'; Output = 'animus_model_tests' },
         @{ Source = 'tests/stage_b_tests.cpp'; Output = 'animus_model_tests_b' },
         @{ Source = 'tests/stage_c_tests.cpp'; Output = 'animus_model_tests_c' },
+        @{ Source = 'tests/stage_d_tests.cpp'; Output = 'animus_model_tests_d' },
+        @{ Source = 'tools/graphics_demo.cpp'; Output = 'animus_graphics_demo' },
         @{ Source = 'src/main.cpp'; Output = 'animus_model_cli' }
     )
     foreach ($target in $targets) {
@@ -41,7 +43,7 @@ try {
     $oldPath = $env:PATH
     try {
         $env:PATH = $compilerDirectory + ';' + $oldPath
-        foreach ($name in @('animus_model_tests', 'animus_model_tests_b', 'animus_model_tests_c')) {
+        foreach ($name in @('animus_model_tests', 'animus_model_tests_b', 'animus_model_tests_c', 'animus_model_tests_d')) {
             & ('.\build\' + $name + '.exe')
             if ($LASTEXITCODE -ne 0) { throw ('Tests failed: ' + $name) }
         }

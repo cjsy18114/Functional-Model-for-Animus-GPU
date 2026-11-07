@@ -15,6 +15,22 @@ Result<DecodedInst> decode(Word raw) {
     const auto opcode = raw & 0x7Fu;
     const auto funct3 = (raw >> 12) & 7u;
     const auto funct7 = raw >> 25;
+    if (opcode == 0x2B) {
+        inst.instruction_class = InstructionClass::Graphics;
+        if (funct3 == 0) {
+            if (inst.rs1 != 0) return illegal();
+            inst.op = Op::GraphicsGet;
+            inst.selector = static_cast<std::uint16_t>(raw >> 20);
+        } else if (funct3 == 2) {
+            if (funct7 != 0) return illegal(); // Reserved rs3 and texture slot must both be encoded zero.
+            inst.op = Op::GraphicsTexture; inst.rs2 = rs2;
+            inst.uses_rs1 = inst.uses_rs2 = true;
+        } else if (funct3 == 3) {
+            if (raw != 0x0000302Bu) return illegal();
+            inst.op = Op::GraphicsEnd; // Fixed output registers are implicit sources, checked at execution.
+        } else return illegal(); // Includes the explicitly reserved funct3=001.
+        return inst;
+    }
     if (opcode == 0x13) {
         inst.uses_rs1 = true;
         inst.immediate_bits = sign_extend_bits(raw >> 20, 12);
@@ -221,7 +237,7 @@ Result<DecodedInst> decode(Word raw) {
         inst.op = Op::Fence; inst.instruction_class = InstructionClass::Environment; inst.rs1 = 0;
         return inst;
     }
-    return make_issue(IssueKind::ModelLimit, "InstructionNotImplemented", "Instruction is outside stage C; full encoding validation is deferred.");
+    return make_issue(IssueKind::ModelLimit, "InstructionNotImplemented", "Instruction is outside stage D; full encoding validation is deferred.");
 }
 const char* op_name(Op op) {
     switch (op) {
@@ -251,6 +267,7 @@ const char* op_name(Op op) {
     NAME(CsrSetImmediate,"CSRRSI") NAME(CsrClearImmediate,"CSRRCI") NAME(Fence,"FENCE") NAME(EnvironmentCall,"ECALL") NAME(Breakpoint,"EBREAK")
     NAME(SfuReciprocal,"gpu.rcp.s") NAME(SfuReciprocalSqrt,"gpu.rsqrt.s") NAME(SfuExp2,"gpu.exp2.s")
     NAME(SfuLog2,"gpu.log2.s") NAME(SfuSin,"gpu.sin.s") NAME(SfuCos,"gpu.cos.s")
+    NAME(GraphicsGet,"gfx.get") NAME(GraphicsTexture,"gfx.tex") NAME(GraphicsEnd,"gfx.end")
 #undef NAME
     }
     return "UNKNOWN";

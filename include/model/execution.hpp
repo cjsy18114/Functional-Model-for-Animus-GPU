@@ -21,6 +21,7 @@ Result<StepEffect> eval_fp(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_sfu(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_csr(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_environment(const Machine&, WarpId, const DecodedInst&);
+Result<StepEffect> eval_graphics(const Machine&, WarpId, const DecodedInst&);
 struct FpResult { Word bits; std::uint8_t flags; };
 Result<unsigned> resolve_rm(unsigned rm, unsigned frm);
 Result<FpResult> fp_eval(Op, Word a, Word b, Word c, unsigned rounding_mode);

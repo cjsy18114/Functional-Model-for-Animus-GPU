@@ -37,7 +37,35 @@ void write_trace(std::ostream& output, const StepRecord& record) {
     output << "],\"experimental_profile\":" << (record.experimental_profile ? "true" : "false")
            << ",\"fp_state_policy\":\"" << (record.fp_state_policy == FpStatePolicy::Unspecified ? "unspecified" : "per-lane-experimental")
            << "\",\"sfu_profile\":\"" << (record.sfu_profile == SfuProfile::Disabled ? "disabled" : "host-math-v1")
-           << "\",\"invocation_id\":" << record.invocation_id << "}\n";
+           << "\",\"invocation_id\":" << record.invocation_id
+           << ",\"ended\":" << (record.status_after == WarpStatus::Ended ? "true" : "false") << ",\"outputs\":";
+    if (!record.outputs) output << "null";
+    else {
+        const auto& batch = *record.outputs;
+        output << "{\"stage\":\"" << stage_name(batch.stage) << "\",\"invocation_id\":" << batch.invocation_id << ",\"vertices\":[";
+        first = true;
+        for (const auto& vertex : batch.vertices) {
+            if (!first) output << ',';
+            first = false;
+            output << "{\"lane\":" << vertex.lane << ",\"vertex_id\":" << vertex.vertex_id << ",\"position_bits\":[";
+            for (unsigned i = 0; i < 4; ++i) { if (i) output << ','; output << vertex.position_bits[i]; }
+            output << "],\"varying_bits\":[";
+            for (unsigned i = 0; i < vertex.varying_count; ++i) { if (i) output << ','; output << vertex.varying_bits[i]; }
+            output << "]}";
+        }
+        output << "],\"fragments\":["; first = true;
+        for (const auto& fragment : batch.fragments) {
+            if (!first) output << ',';
+            first = false;
+            const auto& input = fragment.input;
+            output << "{\"lane\":" << fragment.lane << ",\"pixel_x\":" << input.pixel_x << ",\"pixel_y\":" << input.pixel_y
+                   << ",\"depth_bits\":" << input.depth_bits << ",\"primitive_id\":" << input.primitive_id
+                   << ",\"prim_data_addr\":" << input.prim_data_addr << ",\"bary0_bits\":" << input.bary0_bits
+                   << ",\"bary1_bits\":" << input.bary1_bits << ",\"rgba8\":" << fragment.rgba8 << '}';
+        }
+        output << "]}";
+    }
+    output << "}\n";
     output.flags(flags);
 }
 void write_issue(std::ostream& output, const Issue& issue) {

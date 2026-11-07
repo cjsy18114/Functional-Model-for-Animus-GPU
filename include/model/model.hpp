@@ -71,6 +71,7 @@ struct ModelConfig {
     // S04/S05 require explicit opt-in; neither silently changes the ISA contract.
     FpStatePolicy fp_state_policy = FpStatePolicy::Unspecified;
     SfuProfile sfu_profile = SfuProfile::Disabled;
+    unsigned max_width = 4096, max_height = 4096; // Host resource limits, not ISA texture size guarantees.
 };
 Result<void> validate_config(const ModelConfig& config);
 Mask width_mask(unsigned width); // Precondition: width is in [1,32].
@@ -112,6 +113,48 @@ struct LaneState {
     std::uint8_t fcsr = 0; // [7:5] frm, [4:0] fflags; active only under the explicit S04 policy.
     LaneState() { x_defined[0] = true; }
 };
+
+// D-stage host dispatch data. This is not a Command ISA descriptor or a compute ABI.
+enum class ShaderStage { Test, Vertex, Fragment };
+struct InvocationInput {
+    Word vertex_id = 0;
+    Addr vertex_addr = 0, uniform_base = 0;
+    Word pixel_x = 0, pixel_y = 0, depth_bits = 0, primitive_id = 0;
+    Addr prim_data_addr = 0;
+    Word bary0_bits = 0, bary1_bits = 0;
+};
+struct GraphicsState {
+    // D only needs this texture subset; E will parse the full state descriptor.
+    Addr texture_base = 0;
+    Word texture_width = 0, texture_height = 0, texture_stride = 0;
+};
+struct DispatchContext {
+    ShaderStage stage = ShaderStage::Test;
+    unsigned varying_count = 0;
+    std::array<InvocationInput, kMaxLanes> inputs{};
+    GraphicsState graphics{}; // Value snapshot: later host changes do not change a live dispatch.
+};
+struct VertexOutput {
+    std::uint64_t invocation_id = 0;
+    unsigned lane = 0;
+    Word vertex_id = 0;
+    std::array<Word, 4> position_bits{};
+    std::array<Word, 8> varying_bits{};
+    unsigned varying_count = 0;
+};
+struct FragmentOutput {
+    std::uint64_t invocation_id = 0;
+    unsigned lane = 0;
+    InvocationInput input{}; // Original fragment identity, coordinates, depth and interpolation inputs.
+    Word rgba8 = 0;
+};
+struct OutputBatch {
+    ShaderStage stage = ShaderStage::Test;
+    std::uint64_t invocation_id = 0;
+    std::vector<VertexOutput> vertices;
+    std::vector<FragmentOutput> fragments;
+};
+const char* stage_name(ShaderStage stage);
 enum class StackPhase { Single, First, Second };
 struct ReconvergenceFrame {
     Mask entry_mask = 0, else_mask = 0;
@@ -130,6 +173,8 @@ struct WarpState {
     WarpStatus status = WarpStatus::Ready;
     std::vector<CodeRegion> code_regions{};
     std::uint64_t invocation_id = 0;
+    DispatchContext dispatch{};
+    std::optional<OutputBatch> completed_outputs; // Owned value copies; valid until explicit slot release.
 };
 struct Machine {
     ModelConfig config;
@@ -145,14 +190,21 @@ struct LaunchInfo {
     Mask init_mask = 0xFFFFFFFFu;
     // Empty defaults to the executable image containing entry; explicit ranges support split images.
     std::vector<CodeRegion> code_regions{};
+    DispatchContext dispatch{};
 };
 Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& launch);
+// Validate only provided D-stage host data and mapped extents; no inferred driver allocation sizes.
+Result<void> validate_dispatch(const Machine&, const LaunchInfo&);
+Result<Word> get_input(const DispatchContext&, unsigned lane, std::uint16_t selector);
+Result<Word> sample_texture(const Memory&, const GraphicsState&, Word u_bits, Word v_bits);
+Result<OutputBatch> collect_outputs(const WarpState&, bool check_undefined = true);
 Result<void> initialize_x(Machine& machine, WarpId warp, unsigned lane, unsigned reg, Word value);
 // Host initialization: bits is the FP32 encoding, not a numeric integer-to-float conversion; f0 is writable.
 Result<void> initialize_f(Machine& machine, WarpId warp, unsigned lane, unsigned reg, Word bits);
 // Host test completion only: Ready at stop_pc, empty stack, EXEC == init_mask. Does not execute an ISA exit.
 Result<void> finish_test_warp(Machine& machine, WarpId warp, Addr stop_pc);
-// Returns a value snapshot before clearing a finished/faulted slot. No instruction performs this in C.
+// Returns a value snapshot (including owned graphics outputs) before clearing a finished/faulted slot.
+// gfx.end marks completion but never clears a slot before the host has a chance to retain this copy.
 Result<WarpState> release_warp(Machine& machine, WarpId warp);
 // Round-robin after a warp slot; excluded uses warp-slot bits (not lane EXEC bits). No state is changed.
 std::optional<WarpId> choose_ready(const Machine& machine, std::optional<WarpId> after = {}, Mask excluded = 0);
@@ -183,9 +235,10 @@ enum class Op {
     FloatToInt, FloatToUnsigned, IntToFloat, UnsignedToFloat, MoveFloatToInt, MoveIntToFloat,
     CsrReadWrite, CsrSet, CsrClear, CsrReadWriteImmediate, CsrSetImmediate, CsrClearImmediate,
     Fence, EnvironmentCall, Breakpoint,
-    SfuReciprocal, SfuReciprocalSqrt, SfuExp2, SfuLog2, SfuSin, SfuCos
+    SfuReciprocal, SfuReciprocalSqrt, SfuExp2, SfuLog2, SfuSin, SfuCos,
+    GraphicsGet, GraphicsTexture, GraphicsEnd
 };
-enum class InstructionClass { Alu, MulDiv, LoadStore, Control, Simt, ThreadMask, Float, Csr, Environment, Sfu };
+enum class InstructionClass { Alu, MulDiv, LoadStore, Control, Simt, ThreadMask, Float, Csr, Environment, Sfu, Graphics };
 struct DecodedInst {
     Word raw = 0;
     Op op = Op::AddImmediate;
@@ -197,6 +250,7 @@ struct DecodedInst {
     unsigned rs3 = 0, rm = 0;
     std::uint16_t csr = 0;
     bool uses_fs1 = false, uses_fs2 = false, uses_fs3 = false;
+    std::uint16_t selector = 0; // Unsigned 12-bit graphics input selector.
 };
 Result<DecodedInst> decode(Word raw);
 const char* op_name(Op op);
@@ -215,6 +269,8 @@ struct StepEffect {
     std::vector<MemoryWrite> memory_writes;
     std::optional<ControlUpdate> control;
     std::vector<CsrWrite> csr_writes;
+    std::optional<OutputBatch> outputs;
+    std::optional<WarpStatus> next_status;
 };
 struct StepRecord {
     std::uint64_t step = 0;
@@ -231,12 +287,14 @@ struct StepRecord {
     FpStatePolicy fp_state_policy = FpStatePolicy::Unspecified;
     SfuProfile sfu_profile = SfuProfile::Disabled;
     std::uint64_t invocation_id = 0;
+    std::optional<OutputBatch> outputs;
+    WarpStatus status_before = WarpStatus::Ready, status_after = WarpStatus::Ready;
 };
 Result<StepEffect> evaluate(const Machine& machine, WarpId warp, const DecodedInst& inst);
 // Internal commit boundary: effect must come from successful evaluate of the current state.
 void commit_effect(Machine& machine, WarpId warp, const StepEffect& effect);
 Result<StepRecord> step_shader(Machine& machine, WarpId warp);
-enum class StopReason { Paused, Timeout, ArchitecturalFault, ModelLimit, Diagnostic, HostError, SuspectedDeadlock };
+enum class StopReason { Paused, Timeout, ArchitecturalFault, ModelLimit, Diagnostic, HostError, SuspectedDeadlock, Completed };
 struct RunReport {
     StopReason reason;
     std::uint64_t retired_steps;
@@ -246,6 +304,8 @@ struct RunReport {
 RunReport run_until_stop(Machine& machine, WarpId warp, Addr stop_pc, std::ostream* trace = nullptr);
 struct WarpStop { WarpId warp; Addr stop_pc; };
 RunReport run_warps_until_stops(Machine& machine, std::span<const WarpStop> stops, std::ostream* trace = nullptr);
+// Selected VS/FS warps only; return Completed after each actually executes gfx.end. Does not release slots.
+RunReport run_shader_batch(Machine&, std::span<const WarpId> warps, std::ostream* trace = nullptr);
 void write_trace(std::ostream& output, const StepRecord& record);
 void write_issue(std::ostream& output, const Issue& issue);
 } // namespace animus

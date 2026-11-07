@@ -39,4 +39,36 @@ RunReport run_warps_until_stops(Machine& machine, std::span<const WarpStop> stop
         last = next;
     }
 }
+RunReport run_shader_batch(Machine& machine, std::span<const WarpId> ids, std::ostream* trace) {
+    Mask selected = 0;
+    if (ids.empty() || ids.size() > kWarpSlots)
+        return {StopReason::HostError, 0, make_issue(IssueKind::HostError, "InvalidShaderBatch", "Select one to four unique VS/FS warps.")};
+    for (const auto id : ids) {
+        if (id >= kWarpSlots || !machine.warps[id].allocated || (selected & (Mask{1} << id)) ||
+            machine.warps[id].status == WarpStatus::Faulted || machine.warps[id].dispatch.stage == ShaderStage::Test)
+            return {StopReason::HostError, 0, make_issue(IssueKind::HostError, "InvalidShaderBatch", "Invalid, duplicate, faulted or non-graphics warp.")};
+        selected |= Mask{1} << id;
+    }
+    const auto before = machine.retired_steps;
+    std::optional<WarpId> last;
+    while (true) {
+        Mask ended = 0;
+        for (const auto id : ids) if (machine.warps[id].status == WarpStatus::Ended) ended |= Mask{1} << id;
+        if (ended == selected) return {StopReason::Completed, machine.retired_steps - before, {}};
+        const auto next = choose_ready(machine, last, ~selected & 15u);
+        if (!next) return {StopReason::SuspectedDeadlock, machine.retired_steps - before,
+            make_issue(IssueKind::ModelLimit, "NoReadyWarp", "No selected unfinished shader is ready.")};
+        auto result = step_shader(machine, *next);
+        if (!result) {
+            const auto& issue = result.error();
+            const auto reason = issue.code == "StepBudget" ? StopReason::Timeout :
+                issue.kind == IssueKind::ArchitecturalFault ? StopReason::ArchitecturalFault :
+                issue.kind == IssueKind::ModelLimit ? StopReason::ModelLimit :
+                issue.kind == IssueKind::Diagnostic ? StopReason::Diagnostic : StopReason::HostError;
+            return {reason, machine.retired_steps - before, issue};
+        }
+        if (trace) write_trace(*trace, result.value());
+        last = next;
+    }
+}
 } // namespace animus

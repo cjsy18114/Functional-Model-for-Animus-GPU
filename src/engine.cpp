@@ -49,6 +49,7 @@ Result<StepEffect> evaluate(const Machine& machine, WarpId id, const DecodedInst
     case InstructionClass::Csr: return eval_csr(machine, id, inst);
     case InstructionClass::Environment: return eval_environment(machine, id, inst);
     case InstructionClass::Sfu: return eval_sfu(machine, id, inst);
+    case InstructionClass::Graphics: return eval_graphics(machine, id, inst);
     }
     return make_issue(IssueKind::HostError, "InvalidInstructionClass", "Unknown instruction class.");
 }
@@ -72,6 +73,8 @@ void commit_effect(Machine& machine, WarpId id, const StepEffect& effect) {
         warp.stack = effect.control->stack;
     }
     warp.pc = effect.next_pc; // Advance once per warp instruction, not once per lane.
+    if (effect.outputs) warp.completed_outputs = effect.outputs;
+    if (effect.next_status) warp.status = *effect.next_status;
 }
 Result<StepRecord> step_shader(Machine& machine, WarpId id) {
     auto valid = validate_warp(machine, id);
@@ -115,6 +118,9 @@ Result<StepRecord> step_shader(Machine& machine, WarpId id) {
     record.csr_writes = effect.value().csr_writes;
     record.fp_state_policy = machine.config.fp_state_policy; record.sfu_profile = machine.config.sfu_profile;
     record.invocation_id = warp.invocation_id;
+    record.outputs = effect.value().outputs;
+    record.status_before = warp.status;
+    record.status_after = effect.value().next_status.value_or(warp.status);
     commit_effect(machine, id, effect.value());
     ++machine.retired_steps;
     return record;
@@ -137,6 +143,8 @@ RunReport run_until_stop(Machine& machine, WarpId id, Addr stop_pc, std::ostream
             return {reason, machine.retired_steps - before, issue};
         }
         if (trace) write_trace(*trace, result.value());
+        if (machine.warps[id].status == WarpStatus::Ended)
+            return {StopReason::Completed, machine.retired_steps - before, {}};
     }
     return {StopReason::Paused, machine.retired_steps - before, {}};
 }

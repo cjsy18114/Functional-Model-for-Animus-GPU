@@ -15,6 +15,8 @@ Mask width_mask(unsigned width) {
     return width == 32 ? 0xFFFFFFFFu : (Word{1} << width) - 1;
 }
 Result<void> validate_config(const ModelConfig& config) {
+    if (config.max_width == 0 || config.max_height == 0)
+        return make_issue(IssueKind::HostError, "InvalidConfig", "Texture dimension limits must be nonzero.");
     if (config.warp_width < 1 || config.warp_width > kMaxLanes || config.max_warps != kWarpSlots)
         return make_issue(IssueKind::HostError, "InvalidConfig", "Require 1..32 lanes and exactly 4 warp slots.");
     if (config.memory_bytes == 0 || config.memory_bytes > (1ull << 32) ||
@@ -36,6 +38,8 @@ Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& la
     if ((launch.init_mask & ~width_mask(machine.config.warp_width)) != 0)
         return make_issue(IssueKind::HostError, "InvalidMask", "Launch mask exceeds configured lane width.");
     if (launch.init_mask == 0) return std::optional<WarpId>{};
+    auto dispatch_valid = validate_dispatch(machine, launch);
+    if (!dispatch_valid) return dispatch_valid.error();
     auto entry = machine.memory.fetch32(launch.entry);
     if (!entry) return entry.error();
     auto code_regions = launch.code_regions;
@@ -64,6 +68,7 @@ Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& la
         warp.pc = launch.entry;
         warp.init_mask = warp.exec = launch.init_mask;
         warp.code_regions = code_regions;
+        warp.dispatch = launch.dispatch;
         return std::optional<WarpId>{id};
     }
     return make_issue(IssueKind::ModelLimit, "NoFreeWarpSlot", "All four warp slots are allocated.");
@@ -86,8 +91,8 @@ Result<void> finish_test_warp(Machine& machine, WarpId id, Addr stop_pc) {
     if (id >= kWarpSlots || !machine.warps[id].allocated)
         return make_issue(IssueKind::HostError, "InvalidWarp", "Warp slot is not allocated.");
     auto& warp = machine.warps[id];
-    if (warp.status != WarpStatus::Ready || warp.pc != stop_pc || warp.sp != 0 || warp.exec != warp.init_mask)
-        return make_issue(IssueKind::HostError, "NotAtTestExit", "Host test completion requires a reconverged warp at its stop PC.");
+    if (warp.dispatch.stage != ShaderStage::Test || warp.status != WarpStatus::Ready || warp.pc != stop_pc || warp.sp != 0 || warp.exec != warp.init_mask)
+        return make_issue(IssueKind::HostError, "NotAtTestExit", "Host test completion requires Test stage and a reconverged warp at its stop PC.");
     warp.status = WarpStatus::Ended;
     return {};
 }
