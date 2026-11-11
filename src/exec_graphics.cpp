@@ -67,7 +67,8 @@ Result<void> validate_dispatch(const Machine& machine, const LaunchInfo& launch)
         auto uniform = machine.memory.check_access(input.uniform_base, 1, Access::Read);
         if (!uniform) return uniform.error();
         const Addr address = context.stage == ShaderStage::Vertex ? input.vertex_addr : input.prim_data_addr;
-        if (address & 3u) return make_issue(IssueKind::HostError, "InvalidInputAddress", "Vertex/interpolation input must be word aligned.");
+        if (context.stage == ShaderStage::Fragment && (address & 3u))
+            return make_issue(IssueKind::HostError, "InvalidInputAddress", "Interpolation input must be word aligned.");
         const std::uint64_t bytes = context.stage == ShaderStage::Vertex ? 1 : 12 + 12 * context.varying_count;
         auto checked = machine.memory.check_access(address, bytes, Access::Read);
         if (!checked) return checked.error();

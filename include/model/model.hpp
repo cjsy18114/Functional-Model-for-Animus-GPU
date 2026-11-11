@@ -33,6 +33,7 @@ struct Issue {
     std::optional<Word> raw;
     std::optional<Addr> address;
     std::optional<std::string> spec_issue_id;
+    std::optional<Word> command_offset{}; // Host diagnostic, not an extra MMIO register.
 };
 Issue make_issue(IssueKind kind, std::string code, std::string message);
 
@@ -60,6 +61,7 @@ private:
 
 enum class FpStatePolicy { Unspecified, PerLaneExperimental };
 enum class SfuProfile { Disabled, HostMathV1 };
+enum class RasterProfile { Disabled, ReferenceV1 };
 struct ModelConfig {
     unsigned warp_width = 32;
     unsigned max_warps = 4;
@@ -72,6 +74,8 @@ struct ModelConfig {
     FpStatePolicy fp_state_policy = FpStatePolicy::Unspecified;
     SfuProfile sfu_profile = SfuProfile::Disabled;
     unsigned max_width = 4096, max_height = 4096; // Host resource limits, not ISA texture size guarantees.
+    std::uint64_t max_work_items = 10'000'000;
+    RasterProfile raster_profile = RasterProfile::Disabled;
 };
 Result<void> validate_config(const ModelConfig& config);
 Mask width_mask(unsigned width); // Precondition: width is in [1,32].
@@ -124,9 +128,21 @@ struct InvocationInput {
     Word bary0_bits = 0, bary1_bits = 0;
 };
 struct GraphicsState {
-    // D only needs this texture subset; E will parse the full state descriptor.
+    // Keep the D texture prefix for source compatibility; descriptors are decoded
+    // explicitly by word offset, never by copying this C++ struct's layout.
     Addr texture_base = 0;
     Word texture_width = 0, texture_height = 0, texture_stride = 0;
+    Word version = 1, flags = 0;
+    Addr color_base = 0, depth_base = 0;
+    Word width = 0, height = 0, color_stride = 0, depth_stride = 0;
+    Addr vs_entry = 0, fs_entry = 0, vertex_base = 0;
+    Word vertex_stride = 0;
+    Addr uniform_base = 0;
+    unsigned varying_count = 0;
+    std::int32_t viewport_x = 0, viewport_y = 0;
+    Word viewport_width = 0, viewport_height = 0;
+    std::int32_t scissor_x = 0, scissor_y = 0;
+    Word scissor_width = 0, scissor_height = 0;
 };
 struct DispatchContext {
     ShaderStage stage = ShaderStage::Test;
@@ -176,15 +192,70 @@ struct WarpState {
     DispatchContext dispatch{};
     std::optional<OutputBatch> completed_outputs; // Owned value copies; valid until explicit slot release.
 };
+
+// E-stage host metadata and resumable execution. None of these layouts is guest ABI.
+enum class ResourceRole { Command, Descriptor, Shader, Vertex, Uniform, Texture, Color, Depth, Scratch, Completion };
+struct Resource {
+    ResourceRole role;
+    Addr base;
+    std::uint64_t bytes;
+    unsigned permissions;
+};
+enum class SubmissionStatus : Word { Idle = 0, Busy = 1, Done = 2, Error = 3 };
+struct Command { Word opcode = 0, a = 0, b = 0, c = 0; };
+struct RasterVertex { std::array<double,4> position{}; std::array<double,8> varying{}; };
+struct Triangle { std::array<RasterVertex,3> vertices{}; Word primitive_id = 0; };
+struct RasterTriangle {
+    std::array<std::int64_t,3> x{}, y{}; // 1/256-pixel units; normalized to positive edge area.
+    std::array<double,3> depth{};
+    std::array<Word,3> inv_w{};
+    std::array<std::array<Word,3>,8> attr_over_w{};
+    std::int64_t area = 0;
+    Word primitive_id = 0;
+    int left = 0, top = 0, right = -1, bottom = -1;
+};
+enum class DrawPhase { LaunchVertices, RunVertices, PrepareTriangles, SetupTriangle, Scan, RunFragments, Merge };
+struct DrawProgress {
+    Word first = 0, count = 0, primitive = 0;
+    unsigned vertices_done = 0;
+    DrawPhase phase = DrawPhase::LaunchVertices;
+    std::optional<WarpId> warp;
+    std::vector<VertexOutput> vertices;
+    std::vector<Triangle> triangles;
+    std::size_t triangle_index = 0;
+    std::optional<RasterTriangle> raster;
+    Addr interpolation_address = 0;
+    std::uint64_t scan_index = 0;
+    std::vector<InvocationInput> fragments;
+    std::vector<FragmentOutput> outputs;
+    std::size_t merge_index = 0;
+};
+struct SubmissionState {
+    Word cmd_base = 0, cmd_bytes = 0, latched_base = 0, latched_bytes = 0, offset = 0;
+    SubmissionStatus status = SubmissionStatus::Idle;
+    Word error_code = 0, error_offset = 0;
+    bool state_valid = false;
+    GraphicsState graphics{};
+    std::optional<Command> current;
+    bool operation_started = false;
+    std::uint64_t clear_index = 0, shader_attempts = 0, work_items = 0;
+    std::uint64_t completed_commands = 0, completed_primitives = 0, merged_fragments = 0;
+    std::optional<DrawProgress> draw;
+    std::optional<Issue> last_issue;
+};
 struct Machine {
     ModelConfig config;
     Memory memory;
     std::array<WarpState, kWarpSlots> warps{};
     std::uint64_t attempted_steps = 0, retired_steps = 0;
     std::uint64_t next_invocation_id = 1;
+    std::vector<Resource> resources;
+    SubmissionState submission{};
     explicit Machine(const ModelConfig& cfg) : config(cfg), memory(static_cast<std::size_t>(cfg.memory_bytes)) {}
 };
 Result<Machine> create_machine(const ModelConfig& config = {});
+Result<void> install_resources(Machine&, std::span<const Resource>);
+Result<void> check_submission_access(const Machine&, Addr, std::uint64_t, Access);
 struct LaunchInfo {
     Addr entry = 0;
     Mask init_mask = 0xFFFFFFFFu;
@@ -289,6 +360,8 @@ struct StepRecord {
     std::uint64_t invocation_id = 0;
     std::optional<OutputBatch> outputs;
     WarpStatus status_before = WarpStatus::Ready, status_after = WarpStatus::Ready;
+    std::optional<Word> command_offset;
+    RasterProfile raster_profile = RasterProfile::Disabled;
 };
 Result<StepEffect> evaluate(const Machine& machine, WarpId warp, const DecodedInst& inst);
 // Internal commit boundary: effect must come from successful evaluate of the current state.

@@ -20,6 +20,8 @@ Result<StepEffect> eval_load_store(const Machine& machine, WarpId id, const Deco
         }
         auto checked = machine.memory.check_access(address, bytes, store ? Access::Write : Access::Read);
         if (!checked) { auto issue = checked.error(); issue.lane = lane; issue.address = address; return issue; }
+        auto resource = check_submission_access(machine, address, bytes, store ? Access::Write : Access::Read);
+        if (!resource) { auto issue = resource.error(); issue.lane = lane; issue.address = address; return issue; }
         if (store) {
             for (const auto& old : effect.memory_writes) {
                 if (std::uint64_t{address} < std::uint64_t{old.address} + old.bytes &&

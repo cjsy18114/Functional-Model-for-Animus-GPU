@@ -93,11 +93,15 @@ Result<StepRecord> step_shader(Machine& machine, WarpId id) {
         if (issue.kind == IssueKind::ArchitecturalFault) warp.status = WarpStatus::Faulted;
         return issue;
     };
-    if (machine.attempted_steps >= machine.config.max_steps)
+    const bool submitted = machine.submission.status == SubmissionStatus::Busy;
+    if ((submitted ? machine.submission.shader_attempts : machine.attempted_steps) >= machine.config.max_steps)
         return contextualize(make_issue(IssueKind::ModelLimit, "StepBudget", "Instruction attempt budget exhausted."));
     ++machine.attempted_steps;
+    if (submitted) ++machine.submission.shader_attempts;
     auto target = check_target(machine, warp, warp.pc);
     if (!target) return contextualize(target.error());
+    auto resource = check_submission_access(machine, warp.pc, 4, Access::Execute);
+    if (!resource) return contextualize(resource.error());
     auto raw = machine.memory.fetch32(warp.pc);
     if (!raw) return contextualize(raw.error());
     auto inst = decode(raw.value());
@@ -121,6 +125,8 @@ Result<StepRecord> step_shader(Machine& machine, WarpId id) {
     record.outputs = effect.value().outputs;
     record.status_before = warp.status;
     record.status_after = effect.value().next_status.value_or(warp.status);
+    if (submitted) record.command_offset = machine.submission.offset;
+    record.raster_profile = machine.config.raster_profile;
     commit_effect(machine, id, effect.value());
     ++machine.retired_steps;
     return record;

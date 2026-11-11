@@ -65,7 +65,9 @@ void write_trace(std::ostream& output, const StepRecord& record) {
         }
         output << "]}";
     }
-    output << "}\n";
+    output << ",\"command_offset\":";
+    if (record.command_offset) output << *record.command_offset; else output << "null";
+    output << ",\"raster_profile\":\"" << (record.raster_profile == RasterProfile::ReferenceV1 ? "reference-v1" : "disabled") << "\"}\n";
     output.flags(flags);
 }
 void write_issue(std::ostream& output, const Issue& issue) {
@@ -80,6 +82,7 @@ void write_issue(std::ostream& output, const Issue& issue) {
     if (issue.lane) output << " lane=" << std::dec << *issue.lane;
     if (issue.address) output << " address=0x" << std::hex << *issue.address;
     if (issue.spec_issue_id) output << " spec=" << *issue.spec_issue_id;
+    if (issue.command_offset) output << " command_offset=0x" << std::hex << *issue.command_offset;
     output << '\n';
     output.flags(flags);
 }

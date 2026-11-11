@@ -55,6 +55,7 @@ Result<unsigned> resolve_rm(unsigned rm, unsigned frm) {
     if (resolved > 4) return make_issue(IssueKind::ArchitecturalFault, "InvalidRoundingMode", "Reserved floating-point rounding mode.");
     return resolved;
 }
+Word reference_f32(double value) { return quantize_double(value); }
 Result<FpResult> fp_eval(Op op, Word a, Word b, Word c, unsigned rounding_mode) {
     if (rounding_mode > 4) return make_issue(IssueKind::HostError, "InvalidRoundingMode", "Backend requires a resolved rounding mode 0..4.");
     static_assert(softfloat_flag_invalid == 16 && softfloat_flag_infinite == 8 && softfloat_flag_inexact == 1);

@@ -15,6 +15,8 @@ Mask width_mask(unsigned width) {
     return width == 32 ? 0xFFFFFFFFu : (Word{1} << width) - 1;
 }
 Result<void> validate_config(const ModelConfig& config) {
+    if (config.max_work_items == 0 || (config.raster_profile != RasterProfile::Disabled && config.raster_profile != RasterProfile::ReferenceV1))
+        return make_issue(IssueKind::HostError, "InvalidConfig", "Invalid work budget or raster profile.");
     if (config.max_width == 0 || config.max_height == 0)
         return make_issue(IssueKind::HostError, "InvalidConfig", "Texture dimension limits must be nonzero.");
     if (config.warp_width < 1 || config.warp_width > kMaxLanes || config.max_warps != kWarpSlots)

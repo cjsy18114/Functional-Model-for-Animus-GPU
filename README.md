@@ -1,6 +1,6 @@
 # Functional Model for Animus GPU
 
-Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。当前已完成开发计划 **A1–A4、B1–B7、C1–C5、D1–D3** 的实现与本机测试；未进入 E 阶段。
+Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。当前已完成开发计划 **A1–A4、B1–B7、C1–C5、D1–D3、E1–E4** 的实现与本机测试；未进入 F 阶段。E 的完整 DRAW 使用显式 ReferenceV1 参考光栅约定，不等于完整 Vulkan 实现。
 
 ## 已实现范围
 
@@ -11,7 +11,7 @@ Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。�
 - 先求值并预检全部活动 lane，再统一提交寄存器/内存/控制状态；x0 写丢弃、逻辑步预算和 stop_pc。
 - JSONL 指令轨迹（含内存写入、EXEC/SP 变化、实验配置标志），带 PC/warp/lane/地址/规格问题编号的错误。
 
-支持宿主四 warp 轮询、测试结束和回收复用；RV32F 的 26 条指令（包括 FLW/FSW、单次舍入 FMA、五种舍入模式、NaN/Inf/异常标志）；六种 CSR 操作、FENCE、ECALL/EBREAK；六种 SFU 参考运算。D 阶段增加 gfx.get/tex/end、人工 VS/FS 上下文与固定输出副本；gpu_tmr 仍只读。没有 wspawn/bar/tmc 管理指令、Command、DRAW/光栅/深度测试或 Vulkan 接入；异常处理器与正式任务派发 ABI 尚未定义。
+支持宿主四 warp 轮询、测试结束和回收复用；RV32F 的 26 条指令（包括 FLW/FSW、单次舍入 FMA、五种舍入模式、NaN/Inf/异常标志）；六种 CSR 操作、FENCE、ECALL/EBREAK；六种 SFU 参考运算；gfx.get/tex/end 与 VS/FS 固定输出副本。E 阶段接入现有 MMIO 和六种命令、状态绑定、清屏、裁剪/光栅/真实 shader/Late-Z/D32 写回及完成标记。gpu_tmr 仍只读；未实现 wspawn/bar/tmc 管理指令、函数调用/scratch ABI 或 Vulkan API 接入；异常处理器尚未定义。
 
 ### 未确认规则如何处理
 
@@ -30,7 +30,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-本机使用 GCC 13.2，可不依赖 CMake，直接构建并运行 A/B/C/D 四套测试（脚本要求 g++.exe 同目录有 gcc.exe）：
+本机使用 GCC 13.2，可不依赖 CMake，直接构建并运行 A/B/C/D/E 五套测试（脚本要求 g++.exe 同目录有 gcc.exe）：
 
 ```powershell
 .\build.ps1 -Compiler 'D:\mingw-19.0\MinGW\bin\g++.exe'
@@ -63,7 +63,7 @@ CMake/Visual Studio 构建可能将程序放在 `build/Debug/`。示例每 lane 
 
 预期 7 条成功指令，最终 PC=12、32 lane 的 x1=0。`--stop-pc` 支持十进制或 `0x` 十六进制，达到地址时在取指前暂停；不可达时由总步数预算停止，不将超时当作正常结束。
 
-`build.ps1` 当前运行 A/B/C/D 四套测试，其中 B 为 14 组（包含 240 个小掩码组合）。也可单独执行 `build/animus_model_tests_b.exe`。若有 Python，可额外用独立的整数参考算法验证 810 组边界/固定种子随机向量，每组检查全部 32 lane：
+`build.ps1` 当前运行 A/B/C/D/E 五套测试，其中 B 为 14 组（包含 240 个小掩码组合）。也可单独执行 `build/animus_model_tests_b.exe`。若有 Python，可额外用独立的整数参考算法验证 810 组边界/固定种子随机向量，每组检查全部 32 lane：
 
 ```powershell
 python .\tests\differential_integer.py
@@ -75,7 +75,7 @@ python .\tests\differential_integer.py
 
 ### C 阶段运行与验证
 
-在仓库根目录先执行上面的构建命令；它会自动运行 A 的 7 组、B 的 14 组、C 的 13 组和 D 的 14 组测试。C 测试最后打印 `C instruction coverage: 41/41`：该阶段新增 41 种操作均执行检查，其中 ECALL/EBREAK 检查预期异常。
+在仓库根目录先执行上面的构建命令；它会自动运行 A 的 7 组、B 的 14 组、C 的 13 组、D 的 14 组和 E 的 15 组测试。C 测试最后打印 `C instruction coverage: 41/41`：该阶段新增 41 种操作均执行检查，其中 ECALL/EBREAK 检查预期异常。
 
 ```powershell
 $env:PATH = 'D:\mingw-19.0\MinGW\bin;' + $env:PATH
@@ -121,7 +121,7 @@ $env:PATH = 'D:\mingw-19.0\MinGW\bin;' + $env:PATH
 python .\tests\differential_texture.py
 ```
 
-预期 D 的 **14 组 PASS**、`D instruction coverage: 3/3`；示例提示 `Completed 4 fragment outputs via gfx.end in 8 logical instructions.`；独立参考打印 `PASS texture Fraction oracle: 1024 UV pairs, machine-code FS, packed color and output identity`。整次构建共运行 **48 组 C++ 测试**。
+预期 D 的 **14 组 PASS**、`D instruction coverage: 3/3`；示例提示 `Completed 4 fragment outputs via gfx.end in 8 logical instructions.`；独立参考打印 `PASS texture Fraction oracle: 1024 UV pairs, machine-code FS, packed color and output identity`。当前整次构建共运行 **63 组 C++ 测试**。
 
 示例由专用宿主工具装载人工输入与 3×2 小纹理（stride=16），真正的 UV 读取、采样和结束由 `.bin` 内的 8 条机器指令完成。最后一行 JSON 的 `outputs.fragments` 中，lane 0–3 颜色依次为 `FF0000FF`（红）、`FFFF0000`（蓝）、`FFFFFFFF`（白）、`FFFF00FF`（品红）；R 位于最低字节。可这样查看：
 
@@ -135,6 +135,33 @@ $records[-1].outputs.fragments | Select-Object lane, pixel_x, pixel_y, @{Name='R
 使用 C++ 接入自己的 shader 时，在 `create_warp` 前填写 `LaunchInfo.dispatch`：`stage=Vertex/Fragment`、`varying_count=0..8`、逐 lane `inputs` 和纹理状态 `graphics`，并映射输入/代码资源。结构字段及人工例子见 `tools/graphics_demo.cpp`。调用 `run_shader_batch(machine, ids, trace)`，它只轮询所选图形 warp，直到均通过 gfx.end 返回 Completed；共享整台 Machine 的指令预算。输出位于每个 warp 的 `completed_outputs`，或由 `release_warp` 返回快照保存；释放后可复用槽位。没有自动清槽，不执行Framebuffer写回。`finish_test_warp` 仅供 Test 阶段，不能用来绕过图形 shader 的 gfx.end。
 
 D 阶段的采样边界精度、end 后调试 PC 和宿主资源交接细节，单列在父目录改进日志的“D 阶段实践记录”；B/C 历史记录不改写。
+
+### E 阶段：提交命令与参考绘图
+
+推荐一条命令完成构建、A–E 回归、逐像素核对及所有独立参考：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\verify_e.ps1 -Compiler 'D:\mingw-19.0\MinGW\bin\g++.exe'
+```
+
+预期最后出现 `PASS E verification: all six stages passed.`。任一步失败会显示阶段和已有日志路径，并以非零退出码停止；缺少编译器/Python 会在 preflight 报错。代码未修改时可追加 `-SkipBuild` 省略编译，但仍重跑全部已有回归；Python 路径可用 `-Python` 指定。报告在 build/。下文保留单项操作以便定位问题。
+
+ISA 原文和二进制格式不变：仍为六个现有 MMIO 寄存器、16 字节命令、32 word 描述符。宿主额外提供 `Resource` 清单（用途/地址/长度/权限）；内部 scratch 与完成标记区独立。`install_resources` 全部检查成功才安装，BUSY 时拒绝替换；真实 guest 访存继续检查，输入和当前插值记录只读。
+
+写 CMD_BASE/CMD_BYTES/DOORBELL 后为 BUSY，`run_submission(machine, trace)` 推进现有 NOP/BIND_STATE/CLEAR/DRAW/FENCE/END，严格按 primitive 顺序执行真实 VS/FS。CLEAR 忽略 scissor；DRAW 经六面裁剪、像素中心/top-left 光栅后 Late-Z、LESS、D32_FLOAT；只有写完结果才 FENCE/DONE。不增加 Vortex 的命令格式、Early-Z、D24S8 或隐式 shader 计算。
+
+```powershell
+$env:PATH = 'D:\mingw-19.0\MinGW\bin;' + $env:PATH
+.\build\animus_model_tests_e.exe
+.\build\animus_submission_demo.exe --output .\build\e_framebuffer.bin
+python .\tests\differential_raster.py
+```
+
+预期 E **15 组 PASS**。示例返回 JSON：status=2、error_code=0、commands=5、primitives=2、fragments=16、shader_attempts=18、fence=305419896。颜色文件及 `e_framebuffer.bin.depth.bin` 各 256 字节：8×8 中 x/y=2..5 为红色 0xFF0000FF、深度 0.5，其余黑色、深度 1.0。每行紧密导出，去掉内部 stride=40 的 padding。独立 Fraction 脚本执行 **120 次提交**，逐像素核对颜色/恒定深度、覆盖数量与完成状态。
+
+示例 fixture 显式选择 `RasterProfile::ReferenceV1`、`PerLaneExperimental` 和 `HostMathV1` 并在 JSON 标注，不使用普通 CLI 的数值实验参数。自己的 C++ 程序可仅运行 E1/E2，默认禁用光栅；非空 DRAW 则需显式选择参考 profile。几何采用受控 FP64/RNE、不融合 FMA，位置 RNE 量化到 1/256 像素；正面为 Y 向下时视觉逆时针；完整规则和预期来源见父目录 [E阶段设计与验证](../E阶段设计与验证.md)。
+
+预算由整次 submission 共享（max_steps、max_work_items）；超时/模型限制保留 BUSY、当前命令/warp/扫描/合并位置和资源。提高宿主预算后继续 `run_submission`，不要重复门铃。真正架构故障为 ERROR，保留此前写入、不执行后续 FENCE。ERROR_CODE 模型 v1=0无错/1提交/2命令/3状态/4命令层地址/5shader；ERROR_OFFSET 和宿主 PC/lane 用于定位。非有限位置、投影 w=0、数值/临时区超出能力仍是明确的模型限制，不宣称所有 Vulkan/几何边界已实现。
 
 ### VS Code 标准库头文件提示
 
@@ -161,6 +188,7 @@ D 阶段的采样边界精度、end 后调试 PC 和宿主资源交接细节，�
 | --- | --- |
 | include/model/model.hpp | 公共类型、函数声明、状态与结果契约 |
 | include/model/execution.hpp | 执行模块内部共用接口 |
+| include/model/submission.hpp | E 的资源/MMIO/提交及几何处理接口 |
 | src/memory.cpp | 内存、权限、区域映射与取指 |
 | src/decode.cpp | A–D 指令编码匹配、格式检查和立即数扩展 |
 | src/engine.cpp | 分类分派、源值预检、集中提交和单步；同文件也提供宿主 stop_pc 运行接口 |
@@ -171,6 +199,9 @@ D 阶段的采样边界精度、end 后调试 PC 和宿主资源交接细节，�
 | src/fp_backend.cpp | SoftFloat 适配、舍入/异常；SFU 使用显式实验参考 profile |
 | src/exec_csr.cpp | 浮点 CSR 六种操作、FENCE 和环境异常 |
 | src/exec_graphics.cpp | gfx.get/tex/end、输出收集与精确 texel 定位；同文件也提供宿主派发数据预检 |
+| src/command.cpp | 原 Command/MMIO、描述符、清屏/完成、提交状态与错误处理 |
+| src/draw.cpp | 可暂停的 DRAW、真实 VS/FS、按 primitive 推进及分批合并 |
+| src/raster.cpp | 参考裁剪/Setup/整数覆盖/插值记录/Late-Z 与目标写回 |
 | third_party/softfloat/ | 标准浮点执行依赖，参与模型计算；附来源、校验值和许可证 |
 
 SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结果是否正确的独立参考算法归入第三类。公共头文件还声明宿主接口，不能只凭文件所在类别判断某个函数是否属于 ISA。
@@ -183,6 +214,7 @@ SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结
 | src/loader.cpp | 文件检查与原始机器码装载 |
 | src/scheduler.cpp | 宿主多 warp 轮询与各自停止条件；不模拟硬件调度延迟 |
 | src/main.cpp | CLI 参数处理、创建单 warp、运行机器码和返回退出码 |
+| src/resources.cpp | 宿主资源清单管理，供执行层检查用途、范围和权限 |
 
 #### 3. 辅助验证、诊断与案例
 
@@ -193,10 +225,14 @@ SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结
 | tests/stage_b_tests.cpp | B1–B7 功能、边界、非法输入与掩码组合 |
 | tests/stage_c_tests.cpp | C1–C5 的 13 组测试及新增操作覆盖检查 |
 | tests/stage_d_tests.cpp | D1–D3 的 14 组测试及图形操作覆盖检查 |
+| tests/stage_e_tests.cpp | E1–E4 的 15 组提交、参考绘图、故障和暂停/恢复测试 |
 | tests/differential_integer.py | 独立整数数学参考算法 |
 | tests/differential_float.py | 精确有理数浮点参考与 Decimal SFU 参考 |
 | tests/differential_texture.py | 1024 组独立精确 UV/texel、packed 颜色及片元身份检查 |
 | tools/graphics_demo.cpp | 人工 FS 验证工具，只装载上下文/纹理，让机器码完成计算与输出 |
+| tools/submission_fixture.hpp | 准备已知命令、描述符、资源和真实 VS/FS 机器字，不代算 shader |
+| tools/submission_demo.cpp | 五命令绘图实验，导出颜色/深度和提交摘要 |
+| tests/differential_raster.py | 120 次独立精确几何/覆盖/颜色/深度/完成对照 |
 | cases/*.bin | A/B/C/D 示例机器码，图形示例需配合人工派发工具 |
 | cases/README.md | 示例机器字与预期结果说明 |
 
@@ -205,7 +241,8 @@ SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结
 | 文件 | 职责 |
 | --- | --- |
 | CMakeLists.txt | C/C++ 目标、依赖和自动测试注册 |
-| build.ps1 | 本机 GCC 构建与 A/B/C/D 测试执行入口 |
+| build.ps1 | 本机 GCC 构建与 A/B/C/D/E 测试执行入口 |
+| verify_e.ps1 | 一条命令构建、回归、检查 E 示例全部像素并运行四套独立参考，失败立即停止并给出日志 |
 | .gitignore | 排除构建产物、临时文件与本机配置 |
 | README.md | 本仓库的构建、运行和职责索引 |
 
@@ -213,4 +250,4 @@ SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结
 
 内存辅助函数按字节工作，不额外要求数据对齐；guest LW/SW/FLW/FSW 的未对齐策略另行检查（S06 尚待确认）。装载映像创建只读/可执行区，区域不允许重叠，一次访问须位于一个区域内。未知指令不会静默跳过；A–D 范围内检查固定编码，范围外尚未完整译码的指令报告 ModelLimit，不能据此认定它是非法 ISA 程序。
 
-完整设计和讨论日志目前位于本仓库的父目录，包括 [C阶段设计与验证](../C阶段设计与验证.md)、[D阶段设计与验证](../D阶段设计与验证.md)；README 保留了独立构建和运行所需说明。当前工作止于 D 阶段，后续按开发计划推进，不把物理硬件延迟加入逻辑步计数。
+完整设计和讨论日志目前位于本仓库的父目录，包括 [C阶段设计与验证](../C阶段设计与验证.md)、[D阶段设计与验证](../D阶段设计与验证.md)、[E阶段设计与验证](../E阶段设计与验证.md)；README 保留了独立构建和运行所需说明。当前工作止于 E 阶段，后续按开发计划推进，不把物理硬件延迟加入逻辑步计数。

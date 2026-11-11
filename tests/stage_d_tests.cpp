@@ -170,7 +170,7 @@ void texture_boundaries() {
 }
 void texture_failures() {
     auto machine = base({kTexture});
-    for (const GraphicsState texture : {GraphicsState{2048,0,0,0},{2048,3,2,8},{2049,3,2,16},{2048,3,2,13},{0xFFFFFFFC,2,1,8},{5100,3,2,16}})
+    for (const GraphicsState& texture : {GraphicsState{2048,0,0,0},{2048,3,2,8},{2049,3,2,16},{2048,3,2,13},{0xFFFFFFFC,2,1,8},{5100,3,2,16}})
         require(!sample_texture(machine.memory,texture,0,0),"Invalid texture extent/layout rejected");
     ok(machine.memory.map_region({6144,32,permission(Access::Write)}));
     require(!sample_texture(machine.memory,{6144,3,2,16},0,0),"Texture read permission checked");
