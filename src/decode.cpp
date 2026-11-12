@@ -191,10 +191,16 @@ Result<DecodedInst> decode(Word raw) {
         inst.op = ops[funct7 - 32]; inst.instruction_class = InstructionClass::Sfu; inst.uses_fs1 = true;
         return inst;
     }
-    if (opcode == 0x0B && (funct7 == 2 || funct7 == 3)) {
+    if (opcode == 0x0B && funct7 <= 4) {
         if (funct3 != 0 || inst.rd != 0) return illegal();
         inst.instruction_class = InstructionClass::Simt;
-        if (funct7 == 2) {
+        if (funct7 == 0 || funct7 == 4) {
+            inst.op = funct7 == 0 ? Op::WarpSpawn : Op::Barrier;
+            inst.uses_rs1 = inst.uses_rs2 = true; inst.rs2 = rs2;
+        } else if (funct7 == 1) {
+            if (rs2 != 0) return illegal();
+            inst.op = Op::ThreadMaskControl; inst.uses_rs1 = true;
+        } else if (funct7 == 2) {
             inst.op = Op::Split; inst.uses_rs1 = inst.uses_rs2 = true; inst.rs2 = rs2;
         } else {
             if (inst.rs1 != 0 || rs2 != 0) return illegal();
@@ -237,7 +243,7 @@ Result<DecodedInst> decode(Word raw) {
         inst.op = Op::Fence; inst.instruction_class = InstructionClass::Environment; inst.rs1 = 0;
         return inst;
     }
-    return make_issue(IssueKind::ModelLimit, "InstructionNotImplemented", "Instruction is outside stage D; full encoding validation is deferred.");
+    return make_issue(IssueKind::ModelLimit, "InstructionNotImplemented", "Instruction is outside the implemented ISA subset; full encoding validation is deferred.");
 }
 const char* op_name(Op op) {
     switch (op) {
@@ -255,6 +261,7 @@ const char* op_name(Op op) {
     NAME(Multiply,"MUL") NAME(MultiplyHighSigned,"MULH") NAME(MultiplyHighSignedUnsigned,"MULHSU") NAME(MultiplyHighUnsigned,"MULHU")
     NAME(DivideSigned,"DIV") NAME(DivideUnsigned,"DIVU") NAME(RemainderSigned,"REM") NAME(RemainderUnsigned,"REMU")
     NAME(Split,"gpu.split") NAME(Join,"gpu.join") NAME(ReadThreadMask,"gpu_tmr")
+    NAME(WarpSpawn,"gpu.wspawn") NAME(ThreadMaskControl,"gpu.tmc") NAME(Barrier,"gpu.bar")
     NAME(LoadFloat,"FLW") NAME(StoreFloat,"FSW") NAME(FloatAdd,"FADD.S") NAME(FloatSubtract,"FSUB.S")
     NAME(FloatMultiply,"FMUL.S") NAME(FloatDivide,"FDIV.S") NAME(FloatSqrt,"FSQRT.S")
     NAME(FloatMultiplyAdd,"FMADD.S") NAME(FloatMultiplySubtract,"FMSUB.S")

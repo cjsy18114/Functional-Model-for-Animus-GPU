@@ -21,6 +21,8 @@ constexpr unsigned kMaxLanes = 32;
 constexpr unsigned kRegisters = 32;
 constexpr unsigned kWarpSlots = 4;
 constexpr unsigned kStackDepth = 8;
+constexpr unsigned kBarriersPerGroup = 8; // Host single-core capacity, not an ISA encoding limit.
+constexpr unsigned kBarrierSlots = kWarpSlots * kBarriersPerGroup;
 
 enum class IssueKind { ArchitecturalFault, ModelLimit, Diagnostic, HostError };
 struct Issue {
@@ -178,6 +180,7 @@ struct ReconvergenceFrame {
     StackPhase phase = StackPhase::Single;
 };
 enum class WarpStatus { Ready, Waiting, Ended, Faulted };
+enum class WaitReason { None, Spawn, Barrier };
 struct WarpState {
     bool allocated = false;
     WarpId id = 0;
@@ -187,6 +190,7 @@ struct WarpState {
     unsigned sp = 0;
     std::array<ReconvergenceFrame, kStackDepth> stack{};
     WarpStatus status = WarpStatus::Ready;
+    WaitReason wait_reason = WaitReason::None;
     std::vector<CodeRegion> code_regions{};
     std::uint64_t invocation_id = 0;
     DispatchContext dispatch{};
@@ -243,6 +247,17 @@ struct SubmissionState {
     std::optional<DrawProgress> draw;
     std::optional<Issue> last_issue;
 };
+// Vortex-style blocking local barriers. Each warp contributes one arrival per round.
+struct BarrierState {
+    Word expected = 0;
+    Mask arrived = 0;
+    std::uint64_t generation = 0;
+};
+struct PendingSpawn {
+    WarpId caller = 0;
+    Word count = 0; // Enable slots [0,count), excluding caller; caller continues at PC+4.
+    Addr entry = 0;
+};
 struct Machine {
     ModelConfig config;
     Memory memory;
@@ -251,6 +266,8 @@ struct Machine {
     std::uint64_t next_invocation_id = 1;
     std::vector<Resource> resources;
     SubmissionState submission{};
+    std::array<BarrierState, kBarrierSlots> barriers{};
+    std::optional<PendingSpawn> pending_spawn;
     explicit Machine(const ModelConfig& cfg) : config(cfg), memory(static_cast<std::size_t>(cfg.memory_bytes)) {}
 };
 Result<Machine> create_machine(const ModelConfig& config = {});
@@ -298,7 +315,7 @@ enum class Op {
     BranchLessUnsigned, BranchGreaterEqualUnsigned, JumpLink, JumpLinkRegister,
     Multiply, MultiplyHighSigned, MultiplyHighSignedUnsigned, MultiplyHighUnsigned,
     DivideSigned, DivideUnsigned, RemainderSigned, RemainderUnsigned,
-    Split, Join, ReadThreadMask,
+    Split, Join, ReadThreadMask, WarpSpawn, ThreadMaskControl, Barrier,
     LoadFloat, StoreFloat, FloatAdd, FloatSubtract, FloatMultiply, FloatDivide, FloatSqrt,
     FloatMultiplyAdd, FloatMultiplySubtract, FloatNegMultiplySubtract, FloatNegMultiplyAdd,
     FloatSignInject, FloatSignInvert, FloatSignXor, FloatMin, FloatMax,
@@ -334,6 +351,14 @@ struct ControlUpdate {
     unsigned sp;
     std::array<ReconvergenceFrame, kStackDepth> stack;
 };
+// Only management instructions take a control-plane snapshot. Vector keeps the
+// four large register files off the stack; evaluate remains side-effect free.
+struct ManagementEffect {
+    std::vector<WarpState> warps;
+    std::array<BarrierState, kBarrierSlots> barriers{};
+    std::optional<PendingSpawn> pending_spawn;
+    std::uint64_t next_invocation_id = 0;
+};
 struct StepEffect {
     Addr next_pc = 0;
     std::vector<RegisterWrite> register_writes;
@@ -342,6 +367,15 @@ struct StepEffect {
     std::vector<CsrWrite> csr_writes;
     std::optional<OutputBatch> outputs;
     std::optional<WarpStatus> next_status;
+    std::optional<ManagementEffect> management;
+};
+struct WarpEvent {
+    WarpId warp;
+    std::uint64_t invocation_id;
+    Addr pc;
+    Mask exec;
+    WarpStatus status;
+    WaitReason wait_reason;
 };
 struct StepRecord {
     std::uint64_t step = 0;
@@ -362,6 +396,7 @@ struct StepRecord {
     WarpStatus status_before = WarpStatus::Ready, status_after = WarpStatus::Ready;
     std::optional<Word> command_offset;
     RasterProfile raster_profile = RasterProfile::Disabled;
+    std::vector<WarpEvent> warp_events; // Spawn/wait/wakeup/exit, including other affected warps.
 };
 Result<StepEffect> evaluate(const Machine& machine, WarpId warp, const DecodedInst& inst);
 // Internal commit boundary: effect must come from successful evaluate of the current state.
@@ -379,6 +414,9 @@ struct WarpStop { WarpId warp; Addr stop_pc; };
 RunReport run_warps_until_stops(Machine& machine, std::span<const WarpStop> stops, std::ostream* trace = nullptr);
 // Selected VS/FS warps only; return Completed after each actually executes gfx.end. Does not release slots.
 RunReport run_shader_batch(Machine&, std::span<const WarpId> warps, std::ostream* trace = nullptr);
+// Run every live Test-stage warp, including newly spawned children, until tmc 0.
+// Graphics submissions use their existing runner. Budgets/deadlocks preserve state.
+RunReport run_management(Machine&, std::ostream* trace = nullptr);
 void write_trace(std::ostream& output, const StepRecord& record);
 void write_issue(std::ostream& output, const Issue& issue);
 } // namespace animus

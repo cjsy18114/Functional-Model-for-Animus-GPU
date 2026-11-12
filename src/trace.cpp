@@ -67,7 +67,19 @@ void write_trace(std::ostream& output, const StepRecord& record) {
     }
     output << ",\"command_offset\":";
     if (record.command_offset) output << *record.command_offset; else output << "null";
-    output << ",\"raster_profile\":\"" << (record.raster_profile == RasterProfile::ReferenceV1 ? "reference-v1" : "disabled") << "\"}\n";
+    output << ",\"raster_profile\":\"" << (record.raster_profile == RasterProfile::ReferenceV1 ? "reference-v1" : "disabled") << "\",\"warp_events\":[";
+    first = true;
+    for (const auto& event : record.warp_events) {
+        if (!first) output << ',';
+        first = false;
+        const char* status = event.status == WarpStatus::Ready ? "ready" : event.status == WarpStatus::Waiting ? "waiting" :
+                             event.status == WarpStatus::Ended ? "ended" : "faulted";
+        const char* wait = event.wait_reason == WaitReason::Barrier ? "barrier" : event.wait_reason == WaitReason::Spawn ? "spawn" : "none";
+        output << "{\"warp\":" << event.warp << ",\"invocation_id\":" << event.invocation_id
+               << ",\"pc\":" << event.pc << ",\"exec\":" << event.exec
+               << ",\"status\":\"" << status << "\",\"wait_reason\":\"" << wait << "\"}";
+    }
+    output << "]}\n";
     output.flags(flags);
 }
 void write_issue(std::ostream& output, const Issue& issue) {

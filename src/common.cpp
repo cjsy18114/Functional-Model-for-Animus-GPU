@@ -37,6 +37,8 @@ Result<Machine> create_machine(const ModelConfig& config) {
     catch (const std::length_error&) { return make_issue(IssueKind::HostError, "AllocationFailed", "Memory exceeds container capacity."); }
 }
 Result<std::optional<WarpId>> create_warp(Machine& machine, const LaunchInfo& launch) {
+    if (machine.pending_spawn)
+        return make_issue(IssueKind::HostError, "SpawnInProgress", "Do not inject host warps into a deferred WSPAWN.");
     if ((launch.init_mask & ~width_mask(machine.config.warp_width)) != 0)
         return make_issue(IssueKind::HostError, "InvalidMask", "Launch mask exceeds configured lane width.");
     if (launch.init_mask == 0) return std::optional<WarpId>{};
@@ -90,6 +92,8 @@ Result<void> initialize_f(Machine& machine, WarpId id, unsigned lane, unsigned r
     return {};
 }
 Result<void> finish_test_warp(Machine& machine, WarpId id, Addr stop_pc) {
+    if (machine.pending_spawn)
+        return make_issue(IssueKind::HostError, "SpawnInProgress", "Use TMC-zero to finish peers while WSPAWN waits.");
     if (id >= kWarpSlots || !machine.warps[id].allocated)
         return make_issue(IssueKind::HostError, "InvalidWarp", "Warp slot is not allocated.");
     auto& warp = machine.warps[id];
@@ -102,6 +106,9 @@ Result<WarpState> release_warp(Machine& machine, WarpId id) {
     if (id >= kWarpSlots || !machine.warps[id].allocated)
         return make_issue(IssueKind::HostError, "InvalidWarp", "Warp slot is not allocated.");
     auto& warp = machine.warps[id];
+    for (const auto& barrier : machine.barriers)
+        if (barrier.arrived & (Mask{1} << id))
+            return make_issue(IssueKind::HostError, "BarrierInProgress", "Cannot release a participant in an unfinished barrier round.");
     if (warp.status != WarpStatus::Ended && warp.status != WarpStatus::Faulted)
         return make_issue(IssueKind::HostError, "WarpStillLive", "Cannot release a live/paused/waiting warp.");
     auto snapshot = warp;

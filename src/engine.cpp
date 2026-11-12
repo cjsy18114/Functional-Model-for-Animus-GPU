@@ -1,5 +1,6 @@
 #include "model/model.hpp"
 #include "model/execution.hpp"
+#include <bit>
 #include <optional>
 
 namespace animus {
@@ -22,9 +23,11 @@ Result<StepEffect> evaluate(const Machine& machine, WarpId id, const DecodedInst
     if (inst.rd >= kRegisters || inst.rs1 >= kRegisters || inst.rs2 >= kRegisters || inst.rs3 >= kRegisters)
         return make_issue(IssueKind::HostError, "InvalidDecodedRegister", "Decoded register index is out of range.");
     const auto& warp = machine.warps[id];
+    const bool management = inst.op == Op::WarpSpawn || inst.op == Op::ThreadMaskControl || inst.op == Op::Barrier;
     // Read validation covers all active lanes before any module can submit effects.
     for (unsigned lane = 0; lane < machine.config.warp_width; ++lane) {
         if ((warp.exec & (Mask{1} << lane)) == 0) continue;
+        if (management && lane != static_cast<unsigned>(std::bit_width(warp.exec) - 1)) continue;
         const auto& state = warp.lanes[lane];
         if (machine.config.check_undefined &&
             ((inst.uses_rs1 && !state.x_defined[inst.rs1]) || (inst.uses_rs2 && !state.x_defined[inst.rs2]))) {
@@ -43,7 +46,7 @@ Result<StepEffect> evaluate(const Machine& machine, WarpId id, const DecodedInst
     case InstructionClass::MulDiv: return eval_muldiv(machine, id, inst);
     case InstructionClass::LoadStore: return eval_load_store(machine, id, inst);
     case InstructionClass::Control: return eval_control(machine, id, inst);
-    case InstructionClass::Simt: return eval_simt(machine, id, inst);
+    case InstructionClass::Simt: return management ? eval_management(machine, id, inst) : eval_simt(machine, id, inst);
     case InstructionClass::ThreadMask: return eval_thread_mask(machine, id, inst);
     case InstructionClass::Float: return eval_fp(machine, id, inst);
     case InstructionClass::Csr: return eval_csr(machine, id, inst);
@@ -75,6 +78,13 @@ void commit_effect(Machine& machine, WarpId id, const StepEffect& effect) {
     warp.pc = effect.next_pc; // Advance once per warp instruction, not once per lane.
     if (effect.outputs) warp.completed_outputs = effect.outputs;
     if (effect.next_status) warp.status = *effect.next_status;
+    if (effect.management) {
+        const auto& update = *effect.management;
+        for (WarpId target = 0; target < kWarpSlots; ++target) machine.warps[target] = update.warps[target];
+        machine.barriers = update.barriers;
+        machine.pending_spawn = update.pending_spawn;
+        machine.next_invocation_id = update.next_invocation_id;
+    }
 }
 Result<StepRecord> step_shader(Machine& machine, WarpId id) {
     auto valid = validate_warp(machine, id);
@@ -127,6 +137,15 @@ Result<StepRecord> step_shader(Machine& machine, WarpId id) {
     record.status_after = effect.value().next_status.value_or(warp.status);
     if (submitted) record.command_offset = machine.submission.offset;
     record.raster_profile = machine.config.raster_profile;
+    if (effect.value().management) {
+        const auto& updated = effect.value().management->warps;
+        for (WarpId target = 0; target < kWarpSlots; ++target) {
+            const auto& before = machine.warps[target]; const auto& after = updated[target];
+            if (after.allocated && (target == id || before.invocation_id != after.invocation_id ||
+                before.status != after.status || before.wait_reason != after.wait_reason))
+                record.warp_events.push_back({target, after.invocation_id, after.pc, after.exec, after.status, after.wait_reason});
+        }
+    }
     commit_effect(machine, id, effect.value());
     ++machine.retired_steps;
     return record;
@@ -138,6 +157,8 @@ RunReport run_until_stop(Machine& machine, WarpId id, Addr stop_pc, std::ostream
     if ((stop_pc & 3u) != 0)
         return {StopReason::HostError, 0, make_issue(IssueKind::HostError, "InvalidStopPc", "Host stop_pc must be word aligned.")};
     while (machine.warps[id].pc != stop_pc) {
+        if (machine.warps[id].status == WarpStatus::Waiting)
+            return {StopReason::Paused, machine.retired_steps - before, {}};
         auto result = step_shader(machine, id);
         if (!result) {
             const auto& issue = result.error();

@@ -20,12 +20,13 @@ RunReport run_warps_until_stops(Machine& machine, std::span<const WarpStop> stop
     while (true) {
         Mask paused = 0;
         for (const auto& stop : stops)
-            if (machine.warps[stop.warp].status == WarpStatus::Ready && machine.warps[stop.warp].pc == stop.stop_pc)
+            if (machine.warps[stop.warp].status == WarpStatus::Ended ||
+                (machine.warps[stop.warp].status == WarpStatus::Ready && machine.warps[stop.warp].pc == stop.stop_pc))
                 paused |= Mask{1} << stop.warp;
         if (paused == selected) return {StopReason::Paused, machine.retired_steps - before, {}};
         auto next = choose_ready(machine, last, paused | (~selected & 15u));
         if (!next) return {StopReason::SuspectedDeadlock, machine.retired_steps - before,
-            make_issue(IssueKind::ModelLimit, "NoReadyWarp", "Selected unfinished warps are waiting; no hardware barrier semantics are inferred.")};
+            make_issue(IssueKind::ModelLimit, "NoReadyWarp", "Selected unfinished warps are waiting; required peers may be excluded or missing.")};
         auto result = step_shader(machine, *next);
         if (!result) {
             const auto& issue = result.error();
@@ -58,6 +59,44 @@ RunReport run_shader_batch(Machine& machine, std::span<const WarpId> ids, std::o
         const auto next = choose_ready(machine, last, ~selected & 15u);
         if (!next) return {StopReason::SuspectedDeadlock, machine.retired_steps - before,
             make_issue(IssueKind::ModelLimit, "NoReadyWarp", "No selected unfinished shader is ready.")};
+        auto result = step_shader(machine, *next);
+        if (!result) {
+            const auto& issue = result.error();
+            const auto reason = issue.code == "StepBudget" ? StopReason::Timeout :
+                issue.kind == IssueKind::ArchitecturalFault ? StopReason::ArchitecturalFault :
+                issue.kind == IssueKind::ModelLimit ? StopReason::ModelLimit :
+                issue.kind == IssueKind::Diagnostic ? StopReason::Diagnostic : StopReason::HostError;
+            return {reason, machine.retired_steps - before, issue};
+        }
+        if (trace) write_trace(*trace, result.value());
+        last = next;
+    }
+}
+RunReport run_management(Machine& machine, std::ostream* trace) {
+    const auto before = machine.retired_steps;
+    if (machine.submission.status == SubmissionStatus::Busy)
+        return {StopReason::HostError, 0, make_issue(IssueKind::HostError, "SubmissionInProgress", "Use the submission runner for graphics work.")};
+    for (const auto& warp : machine.warps)
+        if (warp.allocated && warp.dispatch.stage != ShaderStage::Test)
+            return {StopReason::HostError, 0, make_issue(IssueKind::HostError, "NotManagementContext", "Collect/release VS/FS contexts before management execution.")};
+    std::optional<WarpId> last;
+    while (true) {
+        bool unfinished = false;
+        for (const auto& warp : machine.warps) {
+            if (!warp.allocated) continue;
+            if (warp.status == WarpStatus::Faulted) {
+                auto issue = make_issue(IssueKind::ArchitecturalFault, "FaultedWarp", "A management warp is already faulted.");
+                issue.warp_id = warp.id; issue.pc = warp.pc;
+                return {StopReason::ArchitecturalFault, machine.retired_steps - before, issue};
+            }
+            if (warp.status != WarpStatus::Ended) unfinished = true;
+        }
+        if (!unfinished && !machine.pending_spawn)
+            return {StopReason::Completed, machine.retired_steps - before, {}};
+        const auto next = choose_ready(machine, last);
+        if (!next)
+            return {StopReason::SuspectedDeadlock, machine.retired_steps - before,
+                make_issue(IssueKind::ModelLimit, "NoReadyWarp", "All unfinished warps are waiting; check barrier counts/IDs and deferred spawn dependencies.")};
         auto result = step_shader(machine, *next);
         if (!result) {
             const auto& issue = result.error();

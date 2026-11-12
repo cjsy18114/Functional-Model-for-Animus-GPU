@@ -15,6 +15,7 @@ Result<StepEffect> eval_muldiv(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_load_store(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_control(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_simt(const Machine&, WarpId, const DecodedInst&);
+Result<StepEffect> eval_management(const Machine&, WarpId, const DecodedInst&);
 Result<StepEffect> eval_thread_mask(const Machine&, WarpId, const DecodedInst&);
 void append_f_write(StepEffect&, const WarpState&, unsigned lane, unsigned reg, Word bits);
 Result<StepEffect> eval_fp(const Machine&, WarpId, const DecodedInst&);

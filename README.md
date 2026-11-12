@@ -1,6 +1,6 @@
 # Functional Model for Animus GPU
 
-Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。当前已完成开发计划 **A1–A4、B1–B7、C1–C5、D1–D3、E1–E4** 的实现与本机测试；未进入 F 阶段。E 的完整 DRAW 使用显式 ReferenceV1 参考光栅约定，不等于完整 Vulkan 实现。
+Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。当前已完成开发计划 **A1–A4、B1–B7、C1–C5、D1–D3、E1–E4**；2026-11-12另补入wspawn/tmc/bar管理指令，尚未完成整个F阶段。E 的完整 DRAW 使用显式 ReferenceV1 参考光栅约定，不等于完整 Vulkan 实现。
 
 ## 已实现范围
 
@@ -11,7 +11,7 @@ Animus GPU 的 C++20 功能模型，用于验证机器码与编译器结果。�
 - 先求值并预检全部活动 lane，再统一提交寄存器/内存/控制状态；x0 写丢弃、逻辑步预算和 stop_pc。
 - JSONL 指令轨迹（含内存写入、EXEC/SP 变化、实验配置标志），带 PC/warp/lane/地址/规格问题编号的错误。
 
-支持宿主四 warp 轮询、测试结束和回收复用；RV32F 的 26 条指令（包括 FLW/FSW、单次舍入 FMA、五种舍入模式、NaN/Inf/异常标志）；六种 CSR 操作、FENCE、ECALL/EBREAK；六种 SFU 参考运算；gfx.get/tex/end 与 VS/FS 固定输出副本。E 阶段接入现有 MMIO 和六种命令、状态绑定、清屏、裁剪/光栅/真实 shader/Late-Z/D32 写回及完成标记。gpu_tmr 仍只读；未实现 wspawn/bar/tmc 管理指令、函数调用/scratch ABI 或 Vulkan API 接入；异常处理器尚未定义。
+支持宿主四 warp 轮询、测试结束和回收复用；RV32F 的 26 条指令（包括 FLW/FSW、单次舍入 FMA、五种舍入模式、NaN/Inf/异常标志）；六种 CSR 操作、FENCE、ECALL/EBREAK；六种 SFU 参考运算；gfx.get/tex/end 与 VS/FS 固定输出副本。E 阶段接入现有 MMIO 和六种命令、状态绑定、清屏、裁剪/光栅/真实 shader/Late-Z/D32 写回及完成标记。gpu_tmr仍只读；另已实现wspawn/tmc/bar的单core管理行为。函数调用/私有栈与spill的完整ABI、Vulkan API接入及异常处理器仍未完成。
 
 ### 未确认规则如何处理
 
@@ -30,7 +30,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-本机使用 GCC 13.2，可不依赖 CMake，直接构建并运行 A/B/C/D/E 五套测试（脚本要求 g++.exe 同目录有 gcc.exe）：
+本机使用 GCC 13.2，可不依赖 CMake，直接构建并运行A/B/C/D/E及管理指令六套测试（脚本要求g++.exe同目录有gcc.exe）：
 
 ```powershell
 .\build.ps1 -Compiler 'D:\mingw-19.0\MinGW\bin\g++.exe'
@@ -63,7 +63,7 @@ CMake/Visual Studio 构建可能将程序放在 `build/Debug/`。示例每 lane 
 
 预期 7 条成功指令，最终 PC=12、32 lane 的 x1=0。`--stop-pc` 支持十进制或 `0x` 十六进制，达到地址时在取指前暂停；不可达时由总步数预算停止，不将超时当作正常结束。
 
-`build.ps1` 当前运行 A/B/C/D/E 五套测试，其中 B 为 14 组（包含 240 个小掩码组合）。也可单独执行 `build/animus_model_tests_b.exe`。若有 Python，可额外用独立的整数参考算法验证 810 组边界/固定种子随机向量，每组检查全部 32 lane：
+`build.ps1`当前运行A/B/C/D/E及管理指令六套测试，其中B为14组（包含240个小掩码组合）。也可单独执行`build/animus_model_tests_b.exe`。若有Python，可额外用独立的整数参考算法验证810组边界/固定种子随机向量，每组检查全部32 lane：
 
 ```powershell
 python .\tests\differential_integer.py
@@ -102,7 +102,21 @@ python .\tests\differential_float.py
 
 `run_warps_until_stops(machine, stops, trace)` 的 stops 为 1–4 个唯一的 `{warp, stop_pc}`，只轮询所选 Ready warp，每次执行一条；其他 warp 不运行。在各自 stop_pc 前暂停后，逐个 `finish_test_warp(machine, id, stop_pc)`，要求空重汇合栈且 EXEC 恢复初始掩码；随后 `release_warp(machine, id)` 返回最终状态快照并清空槽位。故障 warp 也可释放；仍在运行、等待或仅暂停的 warp 不能直接释放。新调用有新的 `invocation_id`，可区分同槽位的前后任务。
 
-这套接口供测试使用，不是 guest 机器指令或正式派发 ABI；不会模拟硬件时钟、两个 SFU 的争用或 barrier。没有 Ready warp 而仍有未完成者时返回 SuspectedDeadlock 诊断。
+这套宿主接口供测试使用，不是正式派发ABI；不模拟硬件时钟或两个SFU的争用。现在guest BAR能够进入Waiting并由其他参与者唤醒；没有Ready warp而仍有未完成者时返回SuspectedDeadlock诊断。指定stops的调试入口不会自动调度未选中的新warp。
+
+### WSPAWN / TMC / BAR管理程序
+
+参数与主要行为参考固定Vortex提交，编码保持Animus原样。`wspawn`的rs1指定启动槽范围N（最大4），rs2为新warp入口；调用者继续，新warp从lane 0启动。`tmc`设置活动掩码，零掩码结束管理warp；VS/FS仍禁止TMC。`bar`的rs1是`group | (barrier_number << 8)`，rs2为参加的warp数，等待到齐后继续；当前只支持本地屏障。完整约定、差异和验证依据见[管理指令设计与验证](docs/warp_management.md)。
+
+`run_management(machine, trace)`动态运行所有管理warp，包括新spawn的子warp，全部退出才完成。CLI对应`animus_model_cli code.bin --run`。它不自动分配参数/栈，不代替图形提交入口。
+
+构建后，可用一条Python命令生成固定机器码、运行CLI并核对轨迹：
+
+```powershell
+python .\tests\verify_management.py
+```
+
+预期12条成功指令，三个子warp的lane 0各写x3=7，四个warp均TMC退出。新增C++测试为13组，含33种屏障到达顺序各两轮，以及4warp生产者/消费者与暂停恢复；末行`PASS management: 13 test groups; instruction coverage 3/3`。
 
 ### D 阶段：人工 VS/FS 图形接口
 
@@ -121,7 +135,7 @@ $env:PATH = 'D:\mingw-19.0\MinGW\bin;' + $env:PATH
 python .\tests\differential_texture.py
 ```
 
-预期 D 的 **14 组 PASS**、`D instruction coverage: 3/3`；示例提示 `Completed 4 fragment outputs via gfx.end in 8 logical instructions.`；独立参考打印 `PASS texture Fraction oracle: 1024 UV pairs, machine-code FS, packed color and output identity`。当前整次构建共运行 **63 组 C++ 测试**。
+预期 D 的 **14 组 PASS**、`D instruction coverage: 3/3`；示例提示 `Completed 4 fragment outputs via gfx.end in 8 logical instructions.`；独立参考打印 `PASS texture Fraction oracle: 1024 UV pairs, machine-code FS, packed color and output identity`。当前整次构建共运行 **76组C++测试（A–E原63组＋管理指令13组）**。
 
 示例由专用宿主工具装载人工输入与 3×2 小纹理（stride=16），真正的 UV 读取、采样和结束由 `.bin` 内的 8 条机器指令完成。最后一行 JSON 的 `outputs.fragments` 中，lane 0–3 颜色依次为 `FF0000FF`（红）、`FFFF0000`（蓝）、`FFFFFFFF`（白）、`FFFF00FF`（品红）；R 位于最低字节。可这样查看：
 
@@ -195,6 +209,7 @@ python .\tests\differential_raster.py
 | src/exec_integer.cpp | ALU、M、分支与跳转 |
 | src/exec_memory.cpp | guest 整数与浮点 load/store、对齐/冲突规则 |
 | src/exec_simt.cpp | split/join 与只读 gpu_tmr |
+| src/exec_management.cpp | wspawn/tmc/bar、延迟启动、屏障轮次和跨warp唤醒 |
 | src/exec_fp.cpp | 每活动 lane 的浮点/SFU 执行与结果暂存 |
 | src/fp_backend.cpp | SoftFloat 适配、舍入/异常；SFU 使用显式实验参考 profile |
 | src/exec_csr.cpp | 浮点 CSR 六种操作、FENCE 和环境异常 |
@@ -213,7 +228,7 @@ SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结
 | src/common.cpp | 配置检查、模型创建、宿主 warp 启动/初态、测试结束与槽位回收 |
 | src/loader.cpp | 文件检查与原始机器码装载 |
 | src/scheduler.cpp | 宿主多 warp 轮询与各自停止条件；不模拟硬件调度延迟 |
-| src/main.cpp | CLI 参数处理、创建单 warp、运行机器码和返回退出码 |
+| src/main.cpp | CLI参数、初始warp创建；--run动态运行全部管理warp，或按原调试条件暂停 |
 | src/resources.cpp | 宿主资源清单管理，供执行层检查用途、范围和权限 |
 
 #### 3. 辅助验证、诊断与案例
@@ -226,6 +241,8 @@ SFU 的参考实现用于执行 guest 指令，归入本类；用于判断它结
 | tests/stage_c_tests.cpp | C1–C5 的 13 组测试及新增操作覆盖检查 |
 | tests/stage_d_tests.cpp | D1–D3 的 14 组测试及图形操作覆盖检查 |
 | tests/stage_e_tests.cpp | E1–E4 的 15 组提交、参考绘图、故障和暂停/恢复测试 |
+| tests/management_tests.cpp | 三条管理指令的13组测试，含33种屏障到达顺序及真实机器码交换数据 |
+| tests/verify_management.py | 固定机器字的CLI黑盒验证，检查子warp结果和JSONL |
 | tests/differential_integer.py | 独立整数数学参考算法 |
 | tests/differential_float.py | 精确有理数浮点参考与 Decimal SFU 参考 |
 | tests/differential_texture.py | 1024 组独立精确 UV/texel、packed 颜色及片元身份检查 |

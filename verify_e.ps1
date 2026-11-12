@@ -48,12 +48,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Build or regression script failed.' }
     } else {
         # Skipping compilation never skips the existing regression executables.
-        foreach ($target in @('animus_model_tests', 'animus_model_tests_b', 'animus_model_tests_c', 'animus_model_tests_d', 'animus_model_tests_e')) {
+        foreach ($target in @('animus_model_tests', 'animus_model_tests_b', 'animus_model_tests_c', 'animus_model_tests_d', 'animus_model_tests_e', 'animus_management_tests')) {
             $activeLog = Join-Path $PSScriptRoot ('build/verify_e_' + $target + '.log')
             Invoke-CheckedProgram -Program (Join-Path $PSScriptRoot ('build/' + $target + '.exe')) -CommandArguments @() -LogPath $activeLog
         }
     }
-    Write-Host 'PASS A-E C++ regressions (63 test groups in the current version).'
+    Write-Host 'PASS A-E regressions (63 groups) and management regressions (13 groups).'
 
     $activeStage = '2/6 submission summary and all 64 color/depth pixels'
     Write-Host "[$activeStage]"
